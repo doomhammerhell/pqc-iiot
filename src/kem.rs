@@ -101,19 +101,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_kyber_kem() {
+    fn test_kyber_key_generation() {
         let kyber = Kyber::new();
-
-        // Generate keypair
         let (pk, sk) = kyber.generate_keypair().unwrap();
+        assert_eq!(pk.len(), MAX_PUBLIC_KEY_SIZE);
+        assert_eq!(sk.len(), MAX_SECRET_KEY_SIZE);
+    }
 
-        // Encapsulate
+    #[test]
+    fn test_kyber_encapsulation_decapsulation() {
+        let kyber = Kyber::new();
+        let (pk, sk) = kyber.generate_keypair().unwrap();
         let (ct, ss_a) = kyber.encapsulate(&pk).unwrap();
-
-        // Decapsulate
         let ss_b = kyber.decapsulate(&sk, &ct).unwrap();
-
-        // Verify shared secrets match
         assert_eq!(ss_a, ss_b);
     }
 }
