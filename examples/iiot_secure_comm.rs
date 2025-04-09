@@ -5,8 +5,12 @@
 //! exchange and Falcon for message authentication.
 
 use heapless::{String, Vec};
+use pqc_iiot::{coap_secure::SecureCoapClient, mqtt_secure::SecureMqttClient};
 use pqc_iiot::{Falcon, Kyber, Result};
 use rand_core::OsRng;
+use std::net::SocketAddr;
+use std::time::Duration;
+use tokio::runtime::Runtime;
 
 // Maximum message size for our example
 const MAX_MESSAGE_SIZE: usize = 128;
@@ -84,29 +88,81 @@ impl IIoTDevice {
     }
 }
 
-fn main() -> Result<()> {
-    // Create two IIoT devices
-    let device1 = IIoTDevice::new("Sensor-001")?;
-    let device2 = IIoTDevice::new("Controller-001")?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let rt = Runtime::new()?;
 
-    // Simulate secure message exchange
-    println!("Simulating secure communication between IIoT devices...\n");
+    // Configuração dos clientes
+    let mut mqtt_client = match SecureMqttClient::new("localhost", 1883, "iiot_client") {
+        Ok(client) => client,
+        Err(e) => {
+            eprintln!("Erro ao criar cliente MQTT: {}", e);
+            return Err(e.into());
+        }
+    };
 
-    // Device 1 sends a message to Device 2
-    let message = b"Temperature: 25.5C";
-    println!("Original message: {:?}", message);
+    let coap_client = match SecureCoapClient::new() {
+        Ok(client) => client,
+        Err(e) => {
+            eprintln!("Erro ao criar cliente CoAP: {}", e);
+            return Err(e.into());
+        }
+    };
 
-    let (ciphertext, signature) = device1.send_message(message, device2.get_public_key())?;
+    // Configuração dos tópicos e recursos
+    let mqtt_topic = "iiot/sensors/temperature";
+    let coap_path = "iiot/sensors/humidity";
 
-    println!("Message encrypted and signed.");
-    println!("Ciphertext size: {} bytes", ciphertext.len());
-    println!("Signature size: {} bytes", signature.len());
+    // Simular leituras de sensores
+    let temperature_data = b"25.5";
+    let humidity_data = b"60.0";
 
-    // Device 2 receives and verifies the message
-    let shared_secret = device2.receive_message(&ciphertext, &signature, &device1.sig_pk)?;
+    // Publicar dados de temperatura via MQTT
+    if let Err(e) = mqtt_client.publish(mqtt_topic, temperature_data) {
+        eprintln!("Erro ao publicar dados de temperatura: {}", e);
+        return Err(e.into());
+    }
 
-    println!("\nMessage successfully decrypted and verified!");
-    println!("Shared secret size: {} bytes", shared_secret.len());
+    // Enviar dados de umidade via CoAP
+    match coap_client.send_request(coap_path, humidity_data) {
+        Ok(response) => {
+            println!("Resposta do servidor CoAP: {:?}", response);
+        }
+        Err(e) => {
+            eprintln!("Erro ao enviar dados de umidade: {}", e);
+            return Err(e.into());
+        }
+    }
+
+    // Assinar tópico MQTT para receber comandos
+    if let Err(e) = rt.block_on(async {
+        match mqtt_client.subscribe("iiot/commands").await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                eprintln!("Erro ao assinar tópico de comandos: {}", e);
+                Err(e)
+            }
+        }
+    }) {
+        return Err(e.into());
+    }
+
+    // Simular recebimento de comando
+    let command = b"{\"action\": \"calibrate\", \"sensor\": \"temperature\"}";
+    if let Err(e) = mqtt_client.publish("iiot/commands", command) {
+        eprintln!("Erro ao publicar comando: {}", e);
+        return Err(e.into());
+    }
+
+    // Enviar confirmação via CoAP
+    match coap_client.send_request("iiot/status", b"calibration_started") {
+        Ok(response) => {
+            println!("Confirmação enviada: {:?}", response);
+        }
+        Err(e) => {
+            eprintln!("Erro ao enviar confirmação: {}", e);
+            return Err(e.into());
+        }
+    }
 
     Ok(())
 }

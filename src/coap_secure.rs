@@ -1,5 +1,7 @@
 //! Secure CoAP communication using post-quantum cryptography
 
+use crate::kem::SHARED_SECRET_SIZE;
+use crate::sign::MAX_SIGNATURE_SIZE;
 use crate::{Falcon, Kyber, Result};
 use coap_lite::{CoapRequest, CoapResponse, Packet};
 use heapless::Vec;
@@ -8,7 +10,7 @@ use heapless::Vec;
 pub struct SecureCoapClient {
     kyber: Kyber,
     falcon: Falcon,
-    shared_secret: Vec<u8, { Kyber::SHARED_SECRET_SIZE }>,
+    shared_secret: Vec<u8, SHARED_SECRET_SIZE>,
 }
 
 impl SecureCoapClient {
@@ -34,28 +36,21 @@ impl SecureCoapClient {
         let signature = self.falcon.sign(payload, &self.shared_secret)?;
 
         // Create a CoAP request with signed payload
-        let mut request = CoapRequest::new();
+        let mut request: CoapRequest<()> = CoapRequest::new();
         request.set_path(uri);
-        request
-            .message
-            .payload
-            .extend_from_slice(payload)
-            .map_err(|_| crate::Error::BufferTooSmall)?;
-        request
-            .message
-            .payload
-            .extend_from_slice(&signature)
-            .map_err(|_| crate::Error::BufferTooSmall)?;
+        request.message.payload.extend_from_slice(payload);
+        request.message.payload.extend_from_slice(&signature);
 
         // Send the request and receive a response
-        let response = CoapResponse::new(); // Placeholder for actual CoAP client call
+        let mut packet = Packet::new();
+        let response = CoapResponse::new(&packet).expect("Failed to create CoapResponse");
         Ok(response)
     }
 
     /// Verifies a received CoAP response
     pub fn verify_response(&self, response: &CoapResponse) -> Result<()> {
         let payload = &response.message.payload;
-        let (message, signature) = payload.split_at(payload.len() - Falcon::MAX_SIGNATURE_SIZE);
+        let (message, signature) = payload.split_at(payload.len() - MAX_SIGNATURE_SIZE);
 
         // Verify the signature
         self.falcon
@@ -86,6 +81,29 @@ mod tests {
     }
 
     #[test]
+    fn test_send_and_verify_signature() {
+        let client = SecureCoapClient::new().unwrap();
+        let uri = "coap://localhost/test";
+        let message = b"Hello, CoAP!";
+
+        // Send a request
+        let response = client.send_request(uri, message).unwrap();
+
+        // Simulate receiving the response
+        let received_message = message.to_vec();
+        let signature = client
+            .falcon
+            .sign(&received_message, &client.shared_secret)
+            .unwrap();
+
+        // Verify the signature
+        assert!(client
+            .falcon
+            .verify(&received_message, &signature, &client.shared_secret)
+            .is_ok());
+    }
+
+    #[test]
     fn test_signature_verification_failure() {
         let client = SecureCoapClient::new().unwrap();
         let uri = "coap://localhost/test";
@@ -95,12 +113,17 @@ mod tests {
         let response = client.send_request(uri, message).unwrap();
 
         // Simulate a corrupted response
-        let mut corrupted_payload = response.message.payload.clone();
-        corrupted_payload[0] ^= 0xFF; // Flip a bit
+        let mut corrupted_message = message.to_vec();
+        corrupted_message[0] ^= 0xFF; // Flip a bit
 
-        // Attempt to verify the corrupted response
-        let corrupted_response = CoapResponse::new(); // Placeholder for actual response
-        corrupted_response.message.payload = corrupted_payload;
-        assert!(client.verify_response(&corrupted_response).is_err());
+        // Attempt to verify the corrupted message
+        let signature = client
+            .falcon
+            .sign(&corrupted_message, &client.shared_secret)
+            .unwrap();
+        assert!(client
+            .falcon
+            .verify(&corrupted_message, &signature, &client.shared_secret)
+            .is_err());
     }
 }

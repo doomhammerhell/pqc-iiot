@@ -1,52 +1,71 @@
-extern crate test;
-
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use pqc_iiot::{Falcon, Kyber};
-use test::Bencher;
 
-#[bench]
-fn bench_key_generation(b: &mut Bencher) {
-    let kyber = Kyber::new();
-    b.iter(|| {
-        let _ = kyber.generate_keypair().unwrap();
+fn bench_key_generation(c: &mut Criterion) {
+    c.bench_function("key generation", |b| {
+        b.iter(|| {
+            let kyber = Kyber::new();
+            let _ = kyber.generate_keypair().unwrap();
+        })
     });
 }
 
-#[bench]
-fn bench_encapsulation(b: &mut Bencher) {
-    let kyber = Kyber::new();
-    let (pk, _sk) = kyber.generate_keypair().unwrap();
-    b.iter(|| {
-        let _ = kyber.encapsulate(&pk).unwrap();
+fn bench_encapsulation(c: &mut Criterion) {
+    c.bench_function("encapsulation", |b| {
+        b.iter(|| {
+            let kyber = Kyber::new();
+            let (pk, _) = kyber.generate_keypair().unwrap();
+            let _ = kyber.encapsulate(&pk).unwrap();
+        })
     });
 }
 
-#[bench]
-fn bench_decapsulation(b: &mut Bencher) {
-    let kyber = Kyber::new();
-    let (pk, sk) = kyber.generate_keypair().unwrap();
-    let (ct, _ss) = kyber.encapsulate(&pk).unwrap();
-    b.iter(|| {
-        let _ = kyber.decapsulate(&sk, &ct).unwrap();
+fn bench_signature(c: &mut Criterion) {
+    c.bench_function("signature", |b| {
+        b.iter(|| {
+            let falcon = Falcon::new();
+            let message = black_box(b"Benchmark message");
+            let _ = falcon.sign(message, &[]).unwrap();
+        })
     });
 }
 
-#[bench]
-fn bench_signature(b: &mut Bencher) {
-    let falcon = Falcon::new();
-    let (_pk, sk) = falcon.generate_keypair().unwrap();
-    let message = b"Benchmark message";
-    b.iter(|| {
-        let _ = falcon.sign(message, &sk).unwrap();
+fn bench_key_generation_kyber512(c: &mut Criterion) {
+    c.bench_function("key generation kyber512", |b| {
+        b.iter(|| {
+            let kyber = Kyber::new_kyber512();
+            let _ = kyber.generate_keypair().unwrap();
+        })
     });
 }
 
-#[bench]
-fn bench_verification(b: &mut Bencher) {
-    let falcon = Falcon::new();
-    let (pk, sk) = falcon.generate_keypair().unwrap();
-    let message = b"Benchmark message";
-    let signature = falcon.sign(message, &sk).unwrap();
-    b.iter(|| {
-        assert!(falcon.verify(message, &signature, &pk).is_ok());
+fn bench_key_generation_kyber1024(c: &mut Criterion) {
+    c.bench_function("key generation kyber1024", |b| {
+        b.iter(|| {
+            let kyber = Kyber::new_kyber1024();
+            let _ = kyber.generate_keypair().unwrap();
+        })
     });
 }
+
+fn bench_verification(c: &mut Criterion) {
+    c.bench_function("verification", |b| {
+        b.iter(|| {
+            let falcon = Falcon::new();
+            let message = black_box(b"Benchmark message");
+            let signature = falcon.sign(message, &[]).unwrap();
+            let _ = falcon.verify(message, &signature, &[]).unwrap();
+        })
+    });
+}
+
+criterion_group!(
+    benches,
+    bench_key_generation,
+    bench_encapsulation,
+    bench_signature,
+    bench_key_generation_kyber512,
+    bench_key_generation_kyber1024,
+    bench_verification
+);
+criterion_main!(benches);

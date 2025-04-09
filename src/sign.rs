@@ -18,6 +18,8 @@ pub const MAX_SIGNATURE_SIZE: usize = 1280;
 #[derive(Debug, Default)]
 pub struct Falcon<const N: usize = MAX_PUBLIC_KEY_SIZE> {
     _marker: PhantomData<[u8; N]>,
+    secret_key: Option<Vec<u8, MAX_SECRET_KEY_SIZE>>,
+    public_key: Option<Vec<u8, MAX_PUBLIC_KEY_SIZE>>,
 }
 
 impl<const N: usize> Falcon<N> {
@@ -25,12 +27,14 @@ impl<const N: usize> Falcon<N> {
     pub fn new() -> Self {
         Self {
             _marker: PhantomData,
+            secret_key: None,
+            public_key: None,
         }
     }
 
     /// Generates a new keypair
     pub fn generate_keypair(
-        &self,
+        &mut self,
     ) -> Result<(Vec<u8, MAX_PUBLIC_KEY_SIZE>, Vec<u8, MAX_SECRET_KEY_SIZE>)> {
         let (pk, sk) = falcon1024::keypair();
         let mut public_key = Vec::new();
@@ -43,13 +47,15 @@ impl<const N: usize> Falcon<N> {
             .extend_from_slice(sk.as_bytes())
             .map_err(|_| Error::BufferTooSmall)?;
 
+        self.public_key = Some(public_key.clone());
+        self.secret_key = Some(secret_key.clone());
+
         Ok((public_key, secret_key))
     }
 
     /// Signs a message using a secret key
     pub fn sign(&self, message: &[u8], secret_key: &[u8]) -> Result<Vec<u8, MAX_SIGNATURE_SIZE>> {
         let sk = falcon1024::SecretKey::from_bytes(secret_key).map_err(|_| Error::InvalidInput)?;
-
         let signature = falcon1024::detached_sign(message, &sk);
         let mut sig_bytes = Vec::new();
 
@@ -73,7 +79,12 @@ impl<const N: usize> Falcon<N> {
 
 impl<const N: usize> Drop for Falcon<N> {
     fn drop(&mut self) {
-        // No sensitive data to zeroize in the struct itself
+        if let Some(secret_key) = &mut self.secret_key {
+            secret_key.zeroize();
+        }
+        if let Some(public_key) = &mut self.public_key {
+            public_key.zeroize();
+        }
     }
 }
 
@@ -83,13 +94,13 @@ mod tests {
 
     #[test]
     fn test_falcon_signature() {
-        let falcon = Falcon::new();
+        let mut falcon: Falcon<MAX_PUBLIC_KEY_SIZE> = Falcon::new();
+        let message = b"Hello, IIoT!";
 
         // Generate keypair
         let (pk, sk) = falcon.generate_keypair().unwrap();
 
         // Sign a message
-        let message = b"Hello, IIoT!";
         let signature = falcon.sign(message, &sk).unwrap();
 
         // Verify the signature

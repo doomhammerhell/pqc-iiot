@@ -1,16 +1,21 @@
 //! Secure MQTT communication using post-quantum cryptography
 
-use crate::{Falcon, Kyber, Result};
+use crate::kem::MAX_PUBLIC_KEY_SIZE;
+use crate::kem::SHARED_SECRET_SIZE;
+use crate::sign::MAX_SIGNATURE_SIZE;
+use crate::{Error, Falcon, Kyber, Result};
 use heapless::Vec;
-use rumqttc::{Client, EventLoop, MqttOptions, Packet, QoS};
+use rumqttc::{Client, Event, EventLoop, MqttOptions, Packet, QoS};
 use std::time::Duration;
+use tokio::runtime::Runtime;
 
 /// Secure MQTT client using post-quantum cryptography
 pub struct SecureMqttClient {
     client: Client,
     kyber: Kyber,
-    falcon: Falcon,
-    shared_secret: Vec<u8, { Kyber::SHARED_SECRET_SIZE }>,
+    falcon: Falcon<MAX_PUBLIC_KEY_SIZE>,
+    shared_secret: Vec<u8, SHARED_SECRET_SIZE>,
+    public_key: Vec<u8, MAX_PUBLIC_KEY_SIZE>,
 }
 
 impl SecureMqttClient {
@@ -21,8 +26,8 @@ impl SecureMqttClient {
 
         let (client, eventloop) = Client::new(mqttoptions, 10);
 
-        let kyber = Kyber::new();
-        let falcon = Falcon::new();
+        let mut kyber = Kyber::new();
+        let mut falcon = Falcon::new();
 
         // Generate keypair and establish shared secret
         let (pk, sk) = kyber.generate_keypair()?;
@@ -33,40 +38,45 @@ impl SecureMqttClient {
             kyber,
             falcon,
             shared_secret,
+            public_key: pk,
         })
     }
 
     /// Publishes a secure message to a topic
-    pub fn publish(&self, topic: &str, payload: &[u8]) -> Result<()> {
+    pub fn publish(&mut self, topic: &str, payload: &[u8]) -> Result<()> {
         // Sign the payload
         let signature = self.falcon.sign(payload, &self.shared_secret)?;
 
         // Create a binary payload with signature
-        let mut message = Vec::new();
+        let mut message: Vec<u8, { SHARED_SECRET_SIZE + MAX_SIGNATURE_SIZE }> = Vec::new();
         message
             .extend_from_slice(payload)
-            .map_err(|_| crate::Error::BufferTooSmall)?;
+            .map_err(|_| Error::BufferTooSmall)?;
         message
             .extend_from_slice(&signature)
-            .map_err(|_| crate::Error::BufferTooSmall)?;
+            .map_err(|_| Error::BufferTooSmall)?;
 
         // Publish the message
         self.client
-            .publish(topic, QoS::AtLeastOnce, false, message.as_slice())?;
+            .publish(topic, QoS::AtLeastOnce, false, message.as_slice())
+            .map_err(|e| Error::MqttError(e.to_string()))?;
         Ok(())
     }
 
     /// Subscribes to a topic and verifies incoming messages
-    pub fn subscribe(&mut self, topic: &str) -> Result<()> {
-        self.client.subscribe(topic, QoS::AtLeastOnce)?;
+    pub async fn subscribe(&mut self, topic: &str) -> Result<()> {
+        self.client
+            .subscribe(topic, QoS::AtLeastOnce)
+            .map_err(|e| Error::MqttError(e.to_string()))?;
 
-        let mut eventloop = EventLoop::new();
-        loop {
-            let notification = eventloop.poll().unwrap();
-            if let Packet::Publish(publish) = notification {
+        let mut mqttoptions = MqttOptions::new("subscriber", "localhost", 1883);
+        mqttoptions.set_keep_alive(Duration::from_secs(5));
+        let mut eventloop = EventLoop::new(mqttoptions, 10);
+
+        while let Ok(notification) = eventloop.poll().await {
+            if let Event::Incoming(Packet::Publish(publish)) = notification {
                 let payload = publish.payload;
-                let (message, signature) =
-                    payload.split_at(payload.len() - Falcon::MAX_SIGNATURE_SIZE);
+                let (message, signature) = payload.split_at(payload.len() - MAX_SIGNATURE_SIZE);
 
                 // Verify the signature
                 self.falcon
@@ -76,13 +86,21 @@ impl SecureMqttClient {
                 println!("Received message: {:?}", message);
             }
         }
+
+        Ok(())
+    }
+}
+
+// Implement From trait for ClientError
+impl From<rumqttc::ClientError> for crate::Error {
+    fn from(err: rumqttc::ClientError) -> Self {
+        crate::Error::ClientError(err.to_string())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::thread_rng;
 
     #[test]
     fn test_publish_and_subscribe() {
@@ -95,6 +113,29 @@ mod tests {
 
         // Subscribe and verify the message
         client.subscribe(topic).unwrap();
+    }
+
+    #[test]
+    fn test_publish_and_verify_signature() {
+        let mut client = SecureMqttClient::new("broker.hivemq.com", 1883, "test_client").unwrap();
+        let topic = "test/topic";
+        let message = b"Hello, MQTT!";
+
+        // Publish a message
+        client.publish(topic, message).unwrap();
+
+        // Simulate receiving the message
+        let received_message = message.to_vec();
+        let signature = client
+            .falcon
+            .sign(&received_message, &client.shared_secret)
+            .unwrap();
+
+        // Verify the signature
+        assert!(client
+            .falcon
+            .verify(&received_message, &signature, &client.shared_secret)
+            .is_ok());
     }
 
     #[test]
@@ -111,9 +152,13 @@ mod tests {
         corrupted_message[0] ^= 0xFF; // Flip a bit
 
         // Attempt to verify the corrupted message
+        let signature = client
+            .falcon
+            .sign(&corrupted_message, &client.shared_secret)
+            .unwrap();
         assert!(client
             .falcon
-            .verify(&corrupted_message, &client.shared_secret)
+            .verify(&corrupted_message, &signature, &client.shared_secret)
             .is_err());
     }
 }

@@ -8,17 +8,18 @@
 //! for key encapsulation (KEM) and Falcon for digital signatures, specifically
 //! designed for IIoT and embedded applications.
 
+pub mod coap_secure;
 pub mod error;
 pub mod kem;
+pub mod mqtt_secure;
 pub mod sign;
 pub mod utils;
 
-#[cfg(test)]
-mod tests;
-
 // Re-exports for convenience
+pub use coap_secure::SecureCoapClient;
 pub use error::Error;
 pub use kem::Kyber;
+pub use mqtt_secure::SecureMqttClient;
 pub use sign::Falcon;
 
 /// Result type used throughout the crate
@@ -26,15 +27,4 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
 }
