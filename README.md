@@ -121,24 +121,24 @@ cargo fuzz run fuzz_target
 
 This will execute the fuzz tests and report any issues found during the process.
 
-## Desempenho
+## Performance
 
-Este crate foi otimizado para funcionar eficientemente em dispositivos com recursos limitados. Utilizamos benchmarks de microtempo para medir o tempo de execução de operações críticas como geração de chaves, encapsulamento, assinatura e verificação. Os benchmarks foram realizados em diferentes tamanhos de chave (Kyber-512, Kyber-1024) e em várias configurações de hardware.
+This crate has been optimized to work efficiently on resource-constrained devices. We use micro-benchmarks to measure the execution time of critical operations such as key generation, encapsulation, signing, and verification. The benchmarks were conducted on different key sizes (Kyber-512, Kyber-1024) and various hardware configurations.
 
 ### Benchmarks
 
-Os benchmarks foram realizados usando a biblioteca `criterion` e os resultados mostraram que o crate é capaz de operar eficientemente em dispositivos com capacidades de RAM variando de 32KB a 512KB.
+The benchmarks were conducted using the `criterion` library and the results showed that the crate can operate efficiently on devices with RAM capabilities ranging from 32KB to 512KB.
 
-## Segurança
+## Security
 
-O crate adota várias práticas de segurança para garantir a integridade e confidencialidade das comunicações.
+The crate adopts various security practices to ensure the integrity and confidentiality of communications.
 
-### Boas Práticas de Segurança
+### Security Best Practices
 
-- **Tempo Constante:** Todas as operações post-quantum são realizadas de maneira constant-time para evitar ataques de tempo.
-- **Ferramentas de Segurança:** Utilizamos `clippy` e `rust-secure-code` para garantir que o código segue boas práticas de segurança.
-- **Resistência a Ataques:** O crate foi testado para resistência a ataques de Replay, Side-Channel e Man-in-the-Middle.
+- **Constant Time**: All post-quantum operations are performed in constant-time to prevent timing attacks.
+- **Security Tools**: We use `clippy` and `rust-secure-code` to ensure the code follows security best practices.
+- **Attack Resistance**: The crate has been tested for resistance against Replay, Side-Channel, and Man-in-the-Middle attacks.
 
-## Exemplos de Integração
+## Integration Examples
 
-Para exemplos completos de integração com protocolos IIoT como MQTT e CoAP, consulte o diretório `examples/`. Estes exemplos demonstram como usar o crate em sistemas reais, validando seu uso em ambientes de IIoT. 
+For complete integration examples with IIoT protocols such as MQTT and CoAP, see the `examples/` directory. These examples demonstrate how to use the crate in real systems, validating its use in IIoT environments. 
