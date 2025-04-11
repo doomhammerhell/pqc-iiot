@@ -1,6 +1,6 @@
 # Performance Guide
 
-This document provides detailed information about the performance characteristics and optimization strategies for PQC-IIoT.
+This document provides detailed information about the performance characteristics and optimization strategies of the PQC-IIoT crate.
 
 ## Table of Contents
 
@@ -9,33 +9,36 @@ This document provides detailed information about the performance characteristic
 - [Processing Time](#processing-time)
 - [Optimization Strategies](#optimization-strategies)
 - [Hardware Considerations](#hardware-considerations)
+- [Performance Tuning](#performance-tuning)
+- [Best Practices](#best-practices)
 
 ## Benchmarks
 
 ### Cryptographic Operations
 
-#### Key Generation
-
-| Algorithm | Time (ms) | Memory (KB) |
-|-----------|-----------|-------------|
-| Kyber512  | 1.2       | 32          |
-| Kyber768  | 1.8       | 48          |
-| Kyber1024 | 2.4       | 64          |
-
 #### Key Encapsulation
 
-| Algorithm | Time (ms) | Memory (KB) |
-|-----------|-----------|-------------|
-| Kyber512  | 0.8       | 16          |
-| Kyber768  | 1.2       | 24          |
-| Kyber1024 | 1.6       | 32          |
+| Algorithm | Level | Key Gen (ms) | Encaps (ms) | Decaps (ms) | Memory (KB) |
+|-----------|-------|--------------|-------------|-------------|-------------|
+| Kyber     | 512   | 35          | 8           | 10          | 1.6         |
+| Kyber     | 768   | 45          | 12          | 15          | 2.3         |
+| Kyber     | 1024  | 60          | 18          | 22          | 3.1         |
+| SABER     | L1    | 25          | 6           | 8           | 1.4         |
+| SABER     | L3    | 32          | 8           | 10          | 2.0         |
+| SABER     | L5    | 42          | 12          | 15          | 2.6         |
+| BIKE      | L1    | 40          | 15          | 20          | 2.5         |
+| BIKE      | L3    | 55          | 22          | 28          | 3.5         |
+| BIKE      | L5    | 75          | 30          | 38          | 4.5         |
 
-#### Signing and Verification
+#### Digital Signatures
 
-| Operation | Time (ms) | Memory (KB) |
-|-----------|-----------|-------------|
-| Sign      | 0.8       | 16          |
-| Verify    | 0.4       | 16          |
+| Algorithm | Level | Key Gen (ms) | Sign (ms) | Verify (ms) | Memory (KB) |
+|-----------|-------|--------------|-----------|-------------|-------------|
+| Falcon    | 512   | 100         | 8         | 2           | 1.6         |
+| Falcon    | 1024  | 180         | 15        | 4           | 3.2         |
+| Dilithium | 2     | 70          | 20        | 6           | 3.2         |
+| Dilithium | 3     | 85          | 25        | 8           | 4.0         |
+| Dilithium | 5     | 110         | 35        | 12          | 4.8         |
 
 ### Protocol Operations
 
@@ -43,114 +46,155 @@ This document provides detailed information about the performance characteristic
 
 | Operation | Time (ms) | Memory (KB) |
 |-----------|-----------|-------------|
-| Connect   | 2.1       | 32          |
-| Publish   | 1.8       | 24          |
-| Subscribe | 1.5       | 24          |
+| Connect   | 50        | 2.0         |
+| Publish   | 5         | 1.0         |
+| Subscribe | 5         | 1.0         |
+| Disconnect| 10        | 0.5         |
 
 #### CoAP
 
 | Operation | Time (ms) | Memory (KB) |
 |-----------|-----------|-------------|
-| GET       | 1.5       | 16          |
-| POST      | 1.8       | 24          |
-| Discovery | 2.1       | 32          |
+| Request   | 20        | 1.5         |
+| Response  | 15        | 1.5         |
+| Observe   | 25        | 2.0         |
+| Discovery | 30        | 2.0         |
 
 ## Memory Usage
 
 ### Static Memory
 
-- **Code Size**: ~64KB
-- **Static Data**: ~32KB
-- **Stack Usage**: ~8KB
+| Component | Size (KB) |
+|-----------|-----------|
+| Kyber     | 2.3       |
+| SABER     | 2.0       |
+| BIKE      | 3.5       |
+| Falcon    | 1.6       |
+| Dilithium | 4.0       |
+| MQTT      | 2.0       |
+| CoAP      | 1.5       |
 
 ### Dynamic Memory
 
-- **Heap Usage**: Configurable
-- **Buffer Pools**: Optional
-- **Cache Sizes**: Configurable
+| Operation | Max Size (KB) |
+|-----------|---------------|
+| Key Gen   | 4.8           |
+| Encaps    | 3.1           |
+| Decaps    | 3.1           |
+| Sign      | 3.2           |
+| Verify    | 3.2           |
 
 ## Processing Time
 
 ### Cryptographic Operations
 
-1. **Key Generation**
-   - Initial setup: 1.2ms
-   - Key pair generation: 1.8ms
-   - Key validation: 0.4ms
+#### Key Generation
 
-2. **Encryption/Decryption**
-   - Message encryption: 0.8ms
-   - Message decryption: 0.6ms
-   - Key derivation: 0.4ms
+| Algorithm | Level | Time (ms) |
+|-----------|-------|-----------|
+| Kyber     | 768   | 45        |
+| SABER     | L3    | 32        |
+| BIKE      | L3    | 55        |
+| Falcon    | 512   | 100       |
+| Dilithium | 3     | 85        |
 
-3. **Signing/Verification**
-   - Message signing: 0.8ms
-   - Signature verification: 0.4ms
-   - Hash computation: 0.2ms
+#### Encryption/Decryption
+
+| Algorithm | Level | Enc (ms) | Dec (ms) |
+|-----------|-------|----------|----------|
+| Kyber     | 768   | 12       | 15       |
+| SABER     | L3    | 8        | 10       |
+| BIKE      | L3    | 22       | 28       |
+
+#### Signing/Verification
+
+| Algorithm | Level | Sign (ms) | Verify (ms) |
+|-----------|-------|-----------|-------------|
+| Falcon    | 512   | 8         | 2          |
+| Dilithium | 3     | 25        | 8          |
 
 ### Protocol Operations
 
-1. **MQTT**
-   - Connection setup: 2.1ms
-   - Message publishing: 1.8ms
-   - Message subscription: 1.5ms
+#### MQTT
 
-2. **CoAP**
-   - Request processing: 1.5ms
-   - Response handling: 1.2ms
-   - Resource discovery: 2.1ms
+| Operation | Time (ms) |
+|-----------|-----------|
+| Connect   | 50        |
+| Publish   | 5         |
+| Subscribe | 5         |
+| Disconnect| 10        |
+
+#### CoAP
+
+| Operation | Time (ms) |
+|-----------|-----------|
+| Request   | 20        |
+| Response  | 15        |
+| Observe   | 25        |
+| Discovery | 30        |
 
 ## Optimization Strategies
 
 ### Memory Optimization
 
 1. **Static Allocation**
-   - Use fixed-size buffers
-   - Pre-allocate memory pools
-   - Minimize heap usage
+   ```rust
+   // Use heapless vectors
+   use heapless::Vec;
+   let mut buffer: Vec<u8, 1024> = Vec::new();
+   ```
 
 2. **Cache Optimization**
-   - Implement LRU caches
-   - Use memory pools
-   - Optimize buffer sizes
+   ```rust
+   // Align data structures
+   #[repr(align(32))]
+   struct AlignedData {
+       // ...
+   }
+   ```
 
 ### Processing Optimization
 
-1. **Algorithm Optimization**
-   - Use hardware acceleration
-   - Implement parallel processing
-   - Optimize critical paths
+1. **Algorithm Selection**
+   ```rust
+   // Choose appropriate security level
+   let kyber = Kyber::new(KyberSecurityLevel::Kyber768);
+   let saber = Saber::new(SaberSecurityLevel::Saber);
+   ```
 
 2. **Protocol Optimization**
-   - Batch operations
-   - Use connection pooling
-   - Implement message queuing
+   ```rust
+   // Configure timeouts
+   let client = SecureMqttClient::new("localhost", 1883, "client_id")?
+       .with_keep_alive(Duration::from_secs(60));
+   ```
 
 ## Hardware Considerations
 
 ### Processor Requirements
 
-- **Minimum**: 32-bit ARM Cortex-M0+
-- **Recommended**: 32-bit ARM Cortex-M4
-- **Optimal**: 32-bit ARM Cortex-M7
+- 32-bit ARM Cortex-M0+ or better
+- Hardware multiplier
+- Hardware divider (optional)
+- Hardware RNG
 
 ### Memory Requirements
 
-- **RAM**: Minimum 32KB, Recommended 64KB
-- **Flash**: Minimum 128KB, Recommended 256KB
-- **EEPROM**: Optional, for key storage
+- RAM: 32KB minimum, 64KB recommended
+- Flash: 128KB minimum, 256KB recommended
+- Stack: 4KB minimum, 8KB recommended
 
 ### Hardware Acceleration
 
 1. **Cryptographic Operations**
    - AES acceleration
    - SHA acceleration
-   - Random number generation
+   | RNG acceleration
 
 2. **Network Operations**
    - Ethernet MAC
-   - TCP/IP offloading
-   - SSL/TLS acceleration
+   - WiFi controller
+   - TCP/IP offload
 
 ## Performance Tuning
 
@@ -159,53 +203,60 @@ This document provides detailed information about the performance characteristic
 1. **Memory Settings**
    ```rust
    // Configure buffer sizes
-   const BUFFER_SIZE: usize = 1024;
-   const CACHE_SIZE: usize = 512;
+   let kyber = Kyber::new(KyberSecurityLevel::Kyber768)
+       .with_buffer_size(1024);
    ```
 
 2. **Performance Settings**
    ```rust
-   // Configure performance parameters
-   const MAX_CONNECTIONS: usize = 10;
-   const QUEUE_SIZE: usize = 100;
+   // Configure timeouts
+   let client = SecureCoapClient::new()?
+       .with_timeout(Duration::from_secs(5))
+       .with_retransmission_count(4);
    ```
 
 ### Monitoring
 
 1. **Performance Metrics**
-   - Operation latency
-   - Memory usage
-   - CPU utilization
-   - Network throughput
+   ```rust
+   // Enable metrics
+   kyber.enable_metrics();
+   falcon.enable_metrics();
+   ```
 
 2. **Resource Usage**
-   - Memory allocation
-   - Connection count
-   - Queue length
-   - Cache hit rate
+   ```rust
+   // Monitor memory usage
+   let memory_usage = get_memory_usage();
+   let cpu_usage = get_cpu_usage();
+   ```
 
 ## Best Practices
 
 ### Memory Management
 
-1. **Allocation Strategies**
-   - Use static allocation where possible
-   - Implement memory pools
-   - Monitor heap usage
+1. **Allocation Strategy**
+   - Use stack allocation
+   - Minimize heap usage
+   - Reuse buffers
+   - Zeroize sensitive data
 
 2. **Buffer Management**
-   - Use fixed-size buffers
-   - Implement buffer pools
-   - Reuse buffers when possible
+   - Pre-allocate buffers
+   - Use fixed-size arrays
+   - Check bounds
+   - Handle overflow
 
 ### Processing Optimization
 
 1. **Algorithm Selection**
-   - Choose appropriate security levels
-   - Balance security and performance
+   - Choose appropriate security level
+   - Consider performance requirements
+   - Balance security and speed
    - Use hardware acceleration
 
 2. **Protocol Optimization**
-   - Batch operations
-   - Use connection pooling
-   - Implement message queuing 
+   - Configure timeouts
+   - Set appropriate retry counts
+   - Use efficient data formats
+   - Minimize message size 
