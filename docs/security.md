@@ -1,6 +1,6 @@
 # Security Guide
 
-This document provides comprehensive information about the security features and considerations in PQC-IIoT.
+This document provides detailed information about the security features and considerations of the PQC-IIoT crate.
 
 ## Table of Contents
 
@@ -13,215 +13,201 @@ This document provides comprehensive information about the security features and
 
 ## Cryptographic Primitives
 
-### Key Encapsulation (Kyber)
+### Key Encapsulation
 
-- **Algorithm**: CRYSTALS-Kyber
-- **Security Levels**:
-  - Kyber512: 128-bit security
-  - Kyber768: 192-bit security
-  - Kyber1024: 256-bit security
-- **Implementation Details**:
-  - Constant-time operations
-  - Side-channel resistant
-  - Zero-allocation where possible
+#### CRYSTALS-Kyber
+- NIST Round 3 finalist
+- Security levels:
+  - Kyber512 (Level 1)
+  - Kyber768 (Level 3, recommended)
+  - Kyber1024 (Level 5)
+- Based on Module-LWE
+- Constant-time implementation
+- Side-channel resistant
 
-### Digital Signatures (Falcon)
+#### SABER
+- NIST Round 3 finalist
+- Security levels:
+  - LightSaber (Level 1)
+  - Saber (Level 3, recommended)
+  - FireSaber (Level 5)
+- Based on Module-LWR
+- Optimized for embedded systems
+- Constant-time implementation
 
-- **Algorithm**: Falcon
-- **Security Level**: 256-bit security
-- **Implementation Details**:
-  - Constant-time operations
-  - Side-channel resistant
-  - Memory-safe implementation
+#### BIKE (Experimental)
+- Code-based KEM
+- Security levels:
+  - Level 1 (experimental)
+  - Level 3 (experimental)
+  - Level 5 (experimental)
+- For research purposes
+- Not recommended for production use
+
+### Digital Signatures
+
+#### Falcon
+- NIST Round 3 finalist
+- Security levels:
+  - Falcon-512 (Level 1)
+  - Falcon-1024 (Level 5)
+- Based on NTRU lattices
+- Compact signatures
+- Fast verification
+
+#### Dilithium
+- NIST Round 3 finalist
+- Security levels:
+  - Dilithium2 (Level 2)
+  - Dilithium3 (Level 3, recommended)
+  - Dilithium5 (Level 5)
+- Based on Module-LWE
+- Balanced performance
+- Robust implementation
 
 ## Protocol Security
 
 ### MQTT Security
-
-1. **Message Protection**
-   - End-to-end encryption
-   - Message signing
-   - Replay protection
-   - Topic validation
-
-2. **Connection Security**
-   - TLS 1.3 support
-   - Certificate validation
-   - Secure key exchange
+- Post-quantum key exchange
+- Message authentication
+- Replay protection
+- Topic validation
+- Access control
 
 ### CoAP Security
-
-1. **Message Protection**
-   - End-to-end encryption
-   - Message signing
-   - Replay protection
-   - Path validation
-
-2. **Transport Security**
-   - DTLS 1.3 support
-   - Certificate validation
-   - Secure key exchange
+- Post-quantum key exchange
+- Message authentication
+- Resource protection
+- Path validation
+- Access control
 
 ## Implementation Security
 
 ### Memory Safety
-
-- Zero-allocation implementations
-- Secure memory wiping
-- Heap allocation minimization
-- Buffer overflow protection
+- Stack allocation where possible
+- Zeroization of sensitive data
+- Bounds checking
+- No undefined behavior
 
 ### Side-Channel Resistance
-
 - Constant-time operations
-- Branch-free implementations
 - Memory access patterns
-- Timing attack protection
+- Branch-free code
+- Cache timing protection
 
 ### Error Handling
-
-- Secure error messages
-- No sensitive data exposure
-- Graceful failure handling
-- Resource cleanup
+- Secure error reporting
+- No information leakage
+- Graceful failure
+- Recovery mechanisms
 
 ## Best Practices
 
 ### Key Management
+1. **Generation**
+   ```rust
+   // Use recommended security levels
+   let kyber = Kyber::new(KyberSecurityLevel::Kyber768);
+   let falcon = Falcon::new(FalconSecurityLevel::Falcon512);
+   ```
 
-1. **Key Generation**
-   - Use secure random number generators
-   - Validate key parameters
-   - Implement key size checks
+2. **Storage**
+   ```rust
+   // Store keys securely
+   key_storage.store_public_key(&pk)?;
+   key_storage.store_secret_key(&sk)?;
+   ```
 
-2. **Key Storage**
-   - Secure key storage
-   - Key rotation policies
-   - Backup procedures
-
-3. **Key Usage**
-   - Proper key selection
-   - Key lifetime management
-   - Revocation procedures
+3. **Rotation**
+   ```rust
+   // Configure key rotation
+   kyber.with_key_rotation_interval(Duration::from_secs(3600));
+   ```
 
 ### Protocol Usage
-
 1. **MQTT**
-   - Use secure topics
-   - Implement QoS properly
-   - Handle disconnections
-   - Monitor for anomalies
+   ```rust
+   // Configure secure client
+   let client = SecureMqttClient::new("localhost", 1883, "client_id")?
+       .with_tls_config(tls_config)?
+       .with_acl(acl_rules)?;
+   ```
 
 2. **CoAP**
-   - Use secure paths
-   - Implement observation properly
-   - Handle retransmissions
-   - Monitor for anomalies
+   ```rust
+   // Configure secure client
+   let client = SecureCoapClient::new()?
+       .with_dtls_config(dtls_config)?
+       .with_acl(acl_rules)?;
+   ```
 
 ## Threat Model
 
-### Considered Threats
+### Cryptographic Attacks
+- Quantum computing attacks
+- Classical cryptanalysis
+- Side-channel attacks
+- Fault injection
 
-1. **Cryptographic Attacks**
-   - Quantum computing attacks
-   - Side-channel attacks
-   - Timing attacks
-   - Memory attacks
+### Network Attacks
+- Man-in-the-middle
+- Replay attacks
+- Denial of service
+- Eavesdropping
 
-2. **Network Attacks**
-   - Man-in-the-middle attacks
-   - Replay attacks
-   - Denial of service
-   - Eavesdropping
-
-3. **Implementation Attacks**
-   - Buffer overflows
-   - Memory leaks
-   - Resource exhaustion
-   - Race conditions
-
-### Mitigation Strategies
-
-1. **Cryptographic**
-   - Post-quantum algorithms
-   - Constant-time operations
-   - Side-channel resistance
-   - Memory safety
-
-2. **Network**
-   - End-to-end encryption
-   - Message signing
-   - Replay protection
-   - Rate limiting
-
-3. **Implementation**
-   - Memory safety
-   - Resource management
-   - Error handling
-   - Input validation
+### Implementation Attacks
+- Memory corruption
+- Timing attacks
+- Power analysis
+- Fault injection
 
 ## Security Considerations
 
 ### Hardware Requirements
-
-- Minimum RAM: 32KB
-- Minimum Flash: 128KB
-- Processor requirements
-- Hardware acceleration
+- 32-bit processor
+- 32KB RAM minimum
+- 128KB Flash minimum
+- Hardware RNG
 
 ### Performance Impact
-
-- Encryption overhead
-- Signature overhead
+- Key generation time
+- Encryption/decryption time
+- Signature/verification time
 - Memory usage
-- Processing time
 
 ### Deployment Guidelines
+1. **Assessment**
+   - Evaluate security requirements
+   - Choose appropriate algorithms
+   - Configure security levels
 
-1. **Network Configuration**
-   - Firewall settings
-   - Port configuration
-   - Network segmentation
-   - Monitoring setup
+2. **Implementation**
+   - Follow best practices
+   - Enable security features
+   - Configure monitoring
 
-2. **Device Configuration**
-   - Security settings
-   - Key management
-   - Update procedures
-   - Monitoring setup
+3. **Maintenance**
+   - Regular updates
+   - Key rotation
+   - Security audits
 
-3. **Monitoring and Maintenance**
-   - Security monitoring
-   - Performance monitoring
-   - Update procedures
-   - Incident response
+## Update Process
 
-## Security Updates
+### Vulnerability Assessment
+1. Monitor security advisories
+2. Evaluate impact
+3. Plan updates
+4. Test changes
 
-### Update Process
-
-1. **Vulnerability Assessment**
-   - Regular security audits
-   - Vulnerability scanning
-   - Penetration testing
-   - Code review
-
-2. **Patch Management**
-   - Update procedures
-   - Rollback procedures
-   - Testing procedures
-   - Deployment procedures
+### Patch Management
+1. Review patches
+2. Test updates
+3. Deploy changes
+4. Verify security
 
 ### Incident Response
-
-1. **Detection**
-   - Monitoring systems
-   - Alert systems
-   - Log analysis
-   - Anomaly detection
-
-2. **Response**
-   - Incident handling
-   - Communication procedures
-   - Recovery procedures
-   - Documentation procedures 
+1. Detect incidents
+2. Assess impact
+3. Contain threat
+4. Recover systems
+5. Learn from incident 

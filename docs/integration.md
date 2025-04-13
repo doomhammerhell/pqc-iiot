@@ -35,22 +35,28 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-pqc-iiot = "0.1.0"
+pqc-iiot = { version = "0.1.0", features = ["kyber", "falcon"] }
 ```
 
 For embedded systems:
 
 ```toml
 [dependencies]
-pqc-iiot = { version = "0.1.0", features = ["embedded"] }
+pqc-iiot = { version = "0.1.0", features = ["embedded", "kyber", "falcon"] }
 ```
 
 ### Feature Flags
 
 - `std`: Standard library support (default)
 - `embedded`: `no_std` support
+- `kyber`: CRYSTALS-Kyber support
+- `falcon`: Falcon support
+- `dilithium`: Dilithium support
+- `saber`: SABER support
+- `bike`: BIKE support (experimental)
 - `mqtt`: MQTT client support
 - `coap`: CoAP client support
+- `all`: Enable all features
 
 ## Configuration
 
@@ -61,8 +67,8 @@ use pqc_iiot::{Kyber, Falcon, SecureMqttClient, SecureCoapClient};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize cryptographic primitives
-    let kyber = Kyber::new();
-    let falcon = Falcon::new();
+    let kyber = Kyber::new(KyberSecurityLevel::Kyber768);
+    let falcon = Falcon::new(FalconSecurityLevel::Falcon512);
 
     // Initialize MQTT client
     let mqtt_client = SecureMqttClient::new("localhost", 1883, "client_id")?;
@@ -77,19 +83,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Advanced Configuration
 
 ```rust
-use pqc_iiot::{Kyber, Falcon, SecureMqttClient, SecureCoapClient};
+use pqc_iiot::{
+    Kyber, Falcon, Dilithium, Saber,
+    KyberSecurityLevel, FalconSecurityLevel,
+    DilithiumSecurityLevel, SaberSecurityLevel,
+};
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configure Kyber
-    let kyber = Kyber::new()
-        .with_security_level(SecurityLevel::Kyber768)
+    let kyber = Kyber::new(KyberSecurityLevel::Kyber768)
         .with_key_rotation_interval(Duration::from_secs(3600));
 
     // Configure Falcon
-    let falcon = Falcon::new()
-        .with_hash_algorithm(HashAlgorithm::Sha256)
+    let falcon = Falcon::new(FalconSecurityLevel::Falcon512)
+        .with_hash_algorithm(HashAlgorithm::Sha256);
+
+    // Configure Dilithium
+    let dilithium = Dilithium::new(DilithiumSecurityLevel::Level3)
         .with_signature_format(SignatureFormat::Compact);
+
+    // Configure SABER
+    let saber = Saber::new(SaberSecurityLevel::Saber)
+        .with_key_rotation_interval(Duration::from_secs(3600));
 
     // Configure MQTT client
     let mqtt_client = SecureMqttClient::new("localhost", 1883, "client_id")?
@@ -176,21 +192,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 1. **Key Generation**
    ```rust
-   let (pk, sk) = kyber.generate_keypair()?;
-   let (sig_pk, sig_sk) = falcon.generate_keypair()?;
+   // Generate Kyber keys
+   let (kyber_pk, kyber_sk) = kyber.generate_keypair()?;
+   
+   // Generate Falcon keys
+   let (falcon_pk, falcon_sk) = falcon.generate_keypair()?;
+   
+   // Generate Dilithium keys
+   let (dilithium_pk, dilithium_sk) = dilithium.generate_keypair()?;
+   
+   // Generate SABER keys
+   let (saber_pk, saber_sk) = saber.generate_keypair()?;
    ```
 
 2. **Key Storage**
    ```rust
    // Store keys securely
-   key_storage.store_public_key(&pk)?;
-   key_storage.store_secret_key(&sk)?;
+   key_storage.store_public_key(&kyber_pk)?;
+   key_storage.store_secret_key(&kyber_sk)?;
    ```
 
 3. **Key Rotation**
    ```rust
    // Configure automatic key rotation
    kyber.with_key_rotation_interval(Duration::from_secs(3600));
+   saber.with_key_rotation_interval(Duration::from_secs(3600));
    ```
 
 ### Security Configuration
@@ -220,6 +246,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
    // Enable metrics
    kyber.enable_metrics();
    falcon.enable_metrics();
+   dilithium.enable_metrics();
+   saber.enable_metrics();
    
    // Collect metrics
    let metrics = kyber.get_metrics()?;
