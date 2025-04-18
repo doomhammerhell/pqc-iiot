@@ -1,177 +1,151 @@
 # PQC-IIoT
 
-A post-quantum cryptography crate for Industrial IoT (IIoT) applications, providing quantum-resistant cryptographic primitives with a focus on embedded systems and resource-constrained devices.
+A Rust crate for post-quantum cryptography in Industrial IoT systems.
 
 ## Features
 
-- **Post-quantum Key Encapsulation**:
-  - CRYSTALS-Kyber (NIST Round 3 finalist)
-  - SABER (NIST Round 3 finalist)
-  - BIKE (experimental, for research)
+- Post-quantum cryptographic algorithms:
+  - Key Encapsulation Mechanisms (KEMs):
+    - Kyber
+    - SABER
+  - Digital Signatures:
+    - Falcon
+    - Dilithium
+- Pre-defined cryptographic profiles for different IIoT use cases
+- `no_std` and `heapless` support
+- Hardware acceleration support
+- Performance monitoring and metrics
+- Key rotation and management
+- Security level management
 
-- **Post-quantum Digital Signatures**:
-  - Falcon (NIST Round 3 finalist)
-  - Dilithium (NIST Round 3 finalist)
+## Cryptographic Profiles
 
-- **Secure Communication Protocols**:
-  - MQTT with post-quantum security
-  - CoAP with post-quantum security
+The crate provides pre-defined combinations of KEM and signature algorithms, optimized for different IIoT scenarios:
 
-- **Embedded Systems Support**:
-  - `no_std` compatible
-  - Minimal memory footprint
-  - Hardware acceleration support
+### ProfileKyberFalcon
+- **KEM**: Kyber (NIST Level 3)
+- **Signature**: Falcon (NIST Level 5)
+- **Use Case**: High-security applications requiring strong signatures
+- **Performance**: Balanced between KEM and signature operations
+- **Memory Usage**: Moderate
 
-## Security Levels
+### ProfileSaberDilithium
+- **KEM**: SABER (NIST Level 3)
+- **Signature**: Dilithium (NIST Level 3)
+- **Use Case**: Applications requiring standardized algorithms
+- **Performance**: Optimized for consistent performance
+- **Memory Usage**: Moderate to high
 
-### Key Encapsulation
+### ProfileKyberDilithium
+- **KEM**: Kyber (NIST Level 3)
+- **Signature**: Dilithium (NIST Level 3)
+- **Use Case**: General-purpose IIoT applications
+- **Performance**: Balanced across all operations
+- **Memory Usage**: Moderate
 
-- **Kyber**:
-  - Kyber512 (Level 1)
-  - Kyber768 (Level 3, recommended)
-  - Kyber1024 (Level 5)
+## Choosing a Profile
 
-- **SABER**:
-  - LightSaber (Level 1)
-  - Saber (Level 3, recommended)
-  - FireSaber (Level 5)
+Select a profile based on your requirements:
 
-- **BIKE**:
-  - Level 1 (experimental)
-  - Level 3 (experimental)
-  - Level 5 (experimental)
-
-### Digital Signatures
-
-- **Falcon**:
-  - Falcon-512 (Level 1)
-  - Falcon-1024 (Level 5)
-
-- **Dilithium**:
-  - Dilithium2 (Level 2)
-  - Dilithium3 (Level 3, recommended)
-  - Dilithium5 (Level 5)
+1. **Security Level**: Consider the NIST security level needed for your application
+2. **Performance**: Evaluate the computational requirements of your devices
+3. **Memory**: Check the available memory on your target devices
+4. **Standardization**: Consider if you need standardized algorithms
+5. **Use Case**: Match the profile to your specific IIoT scenario
 
 ## Usage
 
-Add to your `Cargo.toml`:
-
-```toml
-[dependencies]
-pqc-iiot = { version = "0.1.0", features = ["kyber", "falcon"] }
-```
-
-For embedded systems:
-
-```toml
-[dependencies]
-pqc-iiot = { version = "0.1.0", features = ["embedded", "kyber", "falcon"] }
-```
-
-### Basic Example
+### Basic Usage
 
 ```rust
-use pqc_iiot::{Kyber, Falcon, KyberSecurityLevel, FalconSecurityLevel};
+use pqc_iiot::crypto::profile::ProfileKyberFalcon;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize Kyber
-    let kyber = Kyber::new(KyberSecurityLevel::Kyber768);
-    let (pk, sk) = kyber.generate_keypair()?;
-    
-    // Initialize Falcon
-    let falcon = Falcon::new(FalconSecurityLevel::Falcon512);
-    let (sig_pk, sig_sk) = falcon.generate_keypair()?;
-    
-    Ok(())
-}
+// Create a profile instance
+let profile = ProfileKyberFalcon::new();
+
+// Generate key pair
+let (pk, sk) = profile.generate_keypair().unwrap();
+
+// Encapsulate a shared secret
+let (ct, ss1) = profile.encapsulate(&pk).unwrap();
+
+// Decapsulate the shared secret
+let ss2 = profile.decapsulate(&sk, &ct).unwrap();
+assert_eq!(ss1, ss2);
+
+// Sign a message
+let msg = b"Hello, IIoT!";
+let sig = profile.sign(&sk, msg).unwrap();
+
+// Verify the signature
+let valid = profile.verify(&pk, msg, &sig).unwrap();
+assert!(valid);
 ```
 
-### Advanced Example with Multiple Algorithms
+### Performance Monitoring
 
 ```rust
-use pqc_iiot::{
-    Kyber, Falcon, Dilithium, Saber,
-    KyberSecurityLevel, FalconSecurityLevel,
-    DilithiumSecurityLevel, SaberSecurityLevel,
-};
+use pqc_iiot::crypto::profile::ProfileKyberFalcon;
+use std::time::Duration;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize multiple KEM algorithms
-    let kyber = Kyber::new(KyberSecurityLevel::Kyber768);
-    let saber = Saber::new(SaberSecurityLevel::Saber);
-    
-    // Initialize multiple signature algorithms
-    let falcon = Falcon::new(FalconSecurityLevel::Falcon512);
-    let dilithium = Dilithium::new(DilithiumSecurityLevel::Level3);
-    
-    // Generate key pairs
-    let (kyber_pk, kyber_sk) = kyber.generate_keypair()?;
-    let (saber_pk, saber_sk) = saber.generate_keypair()?;
-    let (falcon_pk, falcon_sk) = falcon.generate_keypair()?;
-    let (dilithium_pk, dilithium_sk) = dilithium.generate_keypair()?;
-    
-    Ok(())
-}
+// Create a profile with key rotation
+let mut profile = ProfileKyberFalcon::new()
+    .with_key_rotation_interval(Duration::from_secs(3600));
+
+// Perform operations
+let (pk, sk) = profile.generate_keypair().unwrap();
+let (ct, ss) = profile.encapsulate(&pk).unwrap();
+
+// Get performance metrics
+let metrics = profile.metrics();
+println!("Metrics: {:?}", metrics);
 ```
 
-## Feature Flags
+## Configuration
 
-- `std`: Standard library support (default)
-- `embedded`: `no_std` support
-- `kyber`: CRYSTALS-Kyber support
-- `falcon`: Falcon support
-- `dilithium`: Dilithium support
-- `saber`: SABER support
-- `bike`: BIKE support (experimental)
-- `mqtt`: MQTT client support
-- `coap`: CoAP client support
-- `all`: Enable all features
+Profiles can be configured through:
+
+1. **Build-time Configuration**:
+   - Feature flags in `Cargo.toml`
+   - Environment variables
+
+2. **Runtime Configuration**:
+   - Profile selection
+   - Security level adjustment
+   - Key rotation intervals
 
 ## Security Considerations
 
-- All cryptographic operations are constant-time
-- Secret keys are zeroized when dropped
-- Memory is allocated on the stack where possible
-- Side-channel resistant implementations
-- Regular key rotation recommended
+- Use appropriate security levels for your threat model
+- Implement proper key rotation policies
+- Monitor performance metrics for anomalies
+- Validate all cryptographic operations
+- Use constant-time operations where possible
 
 ## Performance
 
-### Memory Usage
+Each profile has different performance characteristics:
 
-| Algorithm | Level | Key Size | Signature Size |
-|-----------|-------|----------|----------------|
-| Kyber     | 512   | 800 B    | 768 B          |
-| Kyber     | 768   | 1184 B   | 1088 B         |
-| Kyber     | 1024  | 1568 B   | 1568 B         |
-| SABER     | L1    | 672 B    | 736 B          |
-| SABER     | L3    | 992 B    | 1088 B         |
-| SABER     | L5    | 1312 B   | 1472 B         |
-| Falcon    | 512   | 897 B    | 690 B          |
-| Falcon    | 1024  | 1793 B   | 1330 B         |
-| Dilithium | 2     | 1184 B   | 2044 B         |
-| Dilithium | 3     | 1472 B   | 2701 B         |
-| Dilithium | 5     | 1760 B   | 3366 B         |
+| Profile | Key Generation | Encapsulation | Decapsulation | Signing | Verification |
+|---------|---------------|---------------|---------------|---------|--------------|
+| Kyber+Falcon | Fast | Fast | Fast | Moderate | Fast |
+| SABER+Dilithium | Moderate | Moderate | Moderate | Fast | Moderate |
+| Kyber+Dilithium | Fast | Fast | Fast | Fast | Moderate |
 
-### Processing Time (ARM Cortex-M4 @ 120MHz)
+## Memory Usage
 
-| Operation          | Kyber768 | SABER L3 | Falcon512 | Dilithium3 |
-|-------------------|----------|----------|-----------|------------|
-| Key Generation    | 45ms     | 32ms     | 120ms     | 85ms       |
-| Encapsulation     | 12ms     | 8ms      | -         | -          |
-| Decapsulation     | 15ms     | 10ms     | -         | -          |
-| Signing           | -        | -        | 8ms       | 25ms       |
-| Verification      | -        | -        | 2ms       | 8ms        |
+Approximate memory requirements:
 
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+| Profile | Static Memory | Dynamic Memory (Peak) |
+|---------|--------------|----------------------|
+| Kyber+Falcon | ~10KB | ~50KB |
+| SABER+Dilithium | ~15KB | ~60KB |
+| Kyber+Dilithium | ~12KB | ~55KB |
 
 ## License
 
-This project is licensed under either of
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-- Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+## Contributing
 
-at your option. 
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests. 

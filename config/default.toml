@@ -1,0 +1,70 @@
+# Default configuration for PQC-IIoT cryptographic profiles
+#
+# This file defines the default settings for cryptographic profiles.
+# You can override these settings by creating a custom configuration file
+# or by setting environment variables.
+
+[profiles.default]
+# Default profile to use when none is specified
+profile = "ProfileKyberDilithium"
+
+# Security level settings
+[profiles.security]
+# Default security level (1, 2, 3, or 5)
+level = 3
+
+# Key rotation settings
+[profiles.rotation]
+# Default key rotation interval in seconds
+interval = 3600
+
+# Performance monitoring settings
+[profiles.metrics]
+# Enable performance metrics collection
+enabled = true
+# Metrics collection interval in seconds
+interval = 60
+
+# Profile-specific settings
+[profiles.kyber_falcon]
+# Kyber security level (512, 768, or 1024)
+kyber_level = 768
+# Falcon security level (512 or 1024)
+falcon_level = 512
+
+[profiles.saber_dilithium]
+# SABER security level (L1, L3, or L5)
+saber_level = "L3"
+# Dilithium security level (2, 3, or 5)
+dilithium_level = 3
+
+[profiles.kyber_dilithium]
+# Kyber security level (512, 768, or 1024)
+kyber_level = 768
+# Dilithium security level (2, 3, or 5)
+dilithium_level = 3
+
+# Hardware acceleration settings
+[hardware]
+# Enable hardware acceleration if available
+enabled = true
+# Preferred acceleration method
+preferred = "aesni" # Options: "aesni", "avx2", "neon"
+
+# Memory management settings
+[memory]
+# Maximum static memory allocation in bytes
+max_static = 16384
+# Maximum dynamic memory allocation in bytes
+max_dynamic = 65536
+# Enable memory zeroization
+zeroize = true
+
+# Logging settings
+[logging]
+# Log level (error, warn, info, debug, trace)
+level = "info"
+# Enable performance logging
+performance = true
+# Enable security event logging
+security = true

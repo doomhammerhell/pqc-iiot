@@ -23,7 +23,7 @@ By participating in this project, you agree to abide by our [Code of Conduct](CO
 1. Fork the repository
 2. Clone your fork:
    ```bash
-   git clone https://github.com/your-username/pqc-iiot.git
+   git clone https://github.com/doomhammerhell/pqc-iiot.git
    cd pqc-iiot
    ```
 3. Set up the development environment:
