@@ -8,8 +8,6 @@ use pqc_iiot::{coap_secure::SecureCoapClient, mqtt_secure::SecureMqttClient};
 use std::net::SocketAddr;
 // use tokio::runtime::Runtime;
 
-
-
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     // let rt = Runtime::new()?;
