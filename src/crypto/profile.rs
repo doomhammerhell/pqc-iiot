@@ -23,17 +23,20 @@
 //! assert!(profile.verify(&pk, msg, &sig).unwrap());
 //! ```
 
+use crate::crypto::traits::{PqcKEM, PqcSignature, SecurityLevel};
 use core::fmt;
-use crate::crypto::traits::{PqcKEM, PqcSignature, CryptoError};
 
 /// Pre-defined cryptographic profiles for IIoT systems
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CryptoProfile {
     /// Kyber (KEM) + Falcon (Signature)
+    #[cfg(all(feature = "kyber", feature = "falcon"))]
     ProfileKyberFalcon,
     /// SABER (KEM) + Dilithium (Signature)
+    #[cfg(all(feature = "saber", feature = "dilithium"))]
     ProfileSaberDilithium,
     /// Kyber (KEM) + Dilithium (Signature)
+    #[cfg(all(feature = "kyber", feature = "dilithium"))]
     ProfileKyberDilithium,
     /// Custom combination of KEM and signature algorithms
     Custom {
@@ -48,8 +51,10 @@ pub enum CryptoProfile {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KemType {
     /// Kyber algorithm
+    #[cfg(feature = "kyber")]
     Kyber,
     /// SABER algorithm
+    #[cfg(feature = "saber")]
     Saber,
 }
 
@@ -57,8 +62,10 @@ pub enum KemType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignType {
     /// Falcon algorithm
+    #[cfg(feature = "falcon")]
     Falcon,
     /// Dilithium algorithm
+    #[cfg(feature = "dilithium")]
     Dilithium,
 }
 
@@ -66,9 +73,9 @@ pub enum SignType {
 #[derive(Debug)]
 pub enum ProfileError {
     /// Error from the KEM algorithm
-    KemError(CryptoError),
+    KemError(crate::Error),
     /// Error from the signature algorithm
-    SignError(CryptoError),
+    SignError(crate::Error),
     /// Invalid profile configuration
     InvalidConfig,
     /// Operation not supported by this profile
@@ -117,54 +124,66 @@ pub trait CryptoProfileTrait {
 }
 
 /// Implementation of the Kyber + Falcon profile
+#[cfg(all(feature = "kyber", feature = "falcon"))]
 pub struct ProfileKyberFalcon {
-    kem: Kyber,
-    sign: Falcon,
+    kem: crate::Kyber,
+    sign: crate::Falcon,
 }
 
+#[cfg(all(feature = "kyber", feature = "falcon"))]
+impl Default for ProfileKyberFalcon {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(all(feature = "kyber", feature = "falcon"))]
 impl ProfileKyberFalcon {
     /// Create a new Kyber + Falcon profile
     pub fn new() -> Self {
         Self {
-            kem: Kyber::new(KyberSecurityLevel::Kyber768),
-            sign: Falcon::new(FalconSecurityLevel::Falcon512),
+            kem: crate::Kyber::new_with_level(crate::KyberSecurityLevel::Kyber768),
+            sign: crate::Falcon::new_with_level(crate::FalconSecurityLevel::Falcon512),
         }
     }
 }
 
+#[cfg(all(feature = "kyber", feature = "falcon"))]
 impl CryptoProfileTrait for ProfileKyberFalcon {
     fn generate_keypair(&self) -> Result<(Vec<u8>, Vec<u8>), ProfileError> {
-        let (kem_pk, kem_sk) = self.kem.generate_keypair()
+        let (kem_pk, kem_sk) = self
+            .kem
+            .generate_keypair()
             .map_err(ProfileError::KemError)?;
-        let (sign_pk, sign_sk) = self.sign.generate_keypair()
+        let (sign_pk, sign_sk) = self
+            .sign
+            .generate_keypair()
             .map_err(ProfileError::SignError)?;
-        
+
         // Combine the keys
         let mut pk = kem_pk;
         pk.extend_from_slice(&sign_pk);
         let mut sk = kem_sk;
         sk.extend_from_slice(&sign_sk);
-        
+
         Ok((pk, sk))
     }
 
     fn encapsulate(&self, pk: &[u8]) -> Result<(Vec<u8>, Vec<u8>), ProfileError> {
-        self.kem.encapsulate(pk)
-            .map_err(ProfileError::KemError)
+        self.kem.encapsulate(pk).map_err(ProfileError::KemError)
     }
 
     fn decapsulate(&self, sk: &[u8], ct: &[u8]) -> Result<Vec<u8>, ProfileError> {
-        self.kem.decapsulate(sk, ct)
-            .map_err(ProfileError::KemError)
+        self.kem.decapsulate(sk, ct).map_err(ProfileError::KemError)
     }
 
     fn sign(&self, sk: &[u8], msg: &[u8]) -> Result<Vec<u8>, ProfileError> {
-        self.sign.sign(sk, msg)
-            .map_err(ProfileError::SignError)
+        self.sign.sign(sk, msg).map_err(ProfileError::SignError)
     }
 
     fn verify(&self, pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<bool, ProfileError> {
-        self.sign.verify(pk, msg, sig)
+        self.sign
+            .verify(pk, msg, sig)
             .map_err(ProfileError::SignError)
     }
 
@@ -177,59 +196,67 @@ impl CryptoProfileTrait for ProfileKyberFalcon {
     }
 
     fn sign_type(&self) -> SignType {
-        SignType::Falcon
+        #[cfg(feature = "falcon")]
+        return SignType::Falcon;
+        #[cfg(not(feature = "falcon"))]
+        unreachable!()
     }
 }
 
 /// Implementation of the SABER + Dilithium profile
+#[cfg(all(feature = "saber", feature = "dilithium"))]
 pub struct ProfileSaberDilithium {
-    kem: Saber,
-    sign: Dilithium,
+    kem: crate::Saber,
+    sign: crate::Dilithium,
 }
 
+#[cfg(all(feature = "saber", feature = "dilithium"))]
 impl ProfileSaberDilithium {
     /// Create a new SABER + Dilithium profile
     pub fn new() -> Self {
         Self {
-            kem: Saber::new(SaberSecurityLevel::Saber),
-            sign: Dilithium::new(DilithiumSecurityLevel::Level3),
+            kem: crate::Saber::new_with_level(crate::SaberSecurityLevel::Saber),
+            sign: crate::Dilithium::new_with_level(crate::DilithiumSecurityLevel::Level3),
         }
     }
 }
 
+#[cfg(all(feature = "saber", feature = "dilithium"))]
 impl CryptoProfileTrait for ProfileSaberDilithium {
     fn generate_keypair(&self) -> Result<(Vec<u8>, Vec<u8>), ProfileError> {
-        let (kem_pk, kem_sk) = self.kem.generate_keypair()
+        let (kem_pk, kem_sk) = self
+            .kem
+            .generate_keypair()
             .map_err(ProfileError::KemError)?;
-        let (sign_pk, sign_sk) = self.sign.generate_keypair()
+        let (sign_pk, sign_sk) = self
+            .sign
+            .generate_keypair()
             .map_err(ProfileError::SignError)?;
-        
+
         // Combine the keys
         let mut pk = kem_pk;
         pk.extend_from_slice(&sign_pk);
         let mut sk = kem_sk;
         sk.extend_from_slice(&sign_sk);
-        
+
         Ok((pk, sk))
     }
 
     fn encapsulate(&self, pk: &[u8]) -> Result<(Vec<u8>, Vec<u8>), ProfileError> {
-        self.kem.encapsulate(pk)
-            .map_err(ProfileError::KemError)
+        self.kem.encapsulate(pk).map_err(ProfileError::KemError)
     }
 
     fn decapsulate(&self, sk: &[u8], ct: &[u8]) -> Result<Vec<u8>, ProfileError> {
-        self.kem.decapsulate(sk, ct)
-            .map_err(ProfileError::KemError)
+        self.kem.decapsulate(sk, ct).map_err(ProfileError::KemError)
     }
 
     fn sign(&self, sk: &[u8], msg: &[u8]) -> Result<Vec<u8>, ProfileError> {
-        self.sign.sign(sk, msg)
-            .map_err(ProfileError::SignError)
+        self.sign.sign(sk, msg).map_err(ProfileError::SignError)
     }
 
     fn verify(&self, pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<bool, ProfileError> {
-        self.sign.verify(pk, msg, sig)
+        self.sign
+            .verify(pk, msg, sig)
             .map_err(ProfileError::SignError)
     }
 
@@ -238,7 +265,10 @@ impl CryptoProfileTrait for ProfileSaberDilithium {
     }
 
     fn kem_type(&self) -> KemType {
-        KemType::Saber
+        #[cfg(feature = "saber")]
+        return KemType::Saber;
+        #[cfg(not(feature = "saber"))]
+        unreachable!()
     }
 
     fn sign_type(&self) -> SignType {
@@ -247,54 +277,59 @@ impl CryptoProfileTrait for ProfileSaberDilithium {
 }
 
 /// Implementation of the Kyber + Dilithium profile
+#[cfg(all(feature = "kyber", feature = "dilithium"))]
 pub struct ProfileKyberDilithium {
-    kem: Kyber,
-    sign: Dilithium,
+    kem: crate::Kyber,
+    sign: crate::Dilithium,
 }
 
+#[cfg(all(feature = "kyber", feature = "dilithium"))]
 impl ProfileKyberDilithium {
     /// Create a new Kyber + Dilithium profile
     pub fn new() -> Self {
         Self {
-            kem: Kyber::new(KyberSecurityLevel::Kyber768),
-            sign: Dilithium::new(DilithiumSecurityLevel::Level3),
+            kem: crate::Kyber::new_with_level(crate::KyberSecurityLevel::Kyber768),
+            sign: crate::Dilithium::new_with_level(crate::DilithiumSecurityLevel::Level3),
         }
     }
 }
 
+#[cfg(all(feature = "kyber", feature = "dilithium"))]
 impl CryptoProfileTrait for ProfileKyberDilithium {
     fn generate_keypair(&self) -> Result<(Vec<u8>, Vec<u8>), ProfileError> {
-        let (kem_pk, kem_sk) = self.kem.generate_keypair()
+        let (kem_pk, kem_sk) = self
+            .kem
+            .generate_keypair()
             .map_err(ProfileError::KemError)?;
-        let (sign_pk, sign_sk) = self.sign.generate_keypair()
+        let (sign_pk, sign_sk) = self
+            .sign
+            .generate_keypair()
             .map_err(ProfileError::SignError)?;
-        
+
         // Combine the keys
         let mut pk = kem_pk;
         pk.extend_from_slice(&sign_pk);
         let mut sk = kem_sk;
         sk.extend_from_slice(&sign_sk);
-        
+
         Ok((pk, sk))
     }
 
     fn encapsulate(&self, pk: &[u8]) -> Result<(Vec<u8>, Vec<u8>), ProfileError> {
-        self.kem.encapsulate(pk)
-            .map_err(ProfileError::KemError)
+        self.kem.encapsulate(pk).map_err(ProfileError::KemError)
     }
 
     fn decapsulate(&self, sk: &[u8], ct: &[u8]) -> Result<Vec<u8>, ProfileError> {
-        self.kem.decapsulate(sk, ct)
-            .map_err(ProfileError::KemError)
+        self.kem.decapsulate(sk, ct).map_err(ProfileError::KemError)
     }
 
     fn sign(&self, sk: &[u8], msg: &[u8]) -> Result<Vec<u8>, ProfileError> {
-        self.sign.sign(sk, msg)
-            .map_err(ProfileError::SignError)
+        self.sign.sign(sk, msg).map_err(ProfileError::SignError)
     }
 
     fn verify(&self, pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<bool, ProfileError> {
-        self.sign.verify(pk, msg, sig)
+        self.sign
+            .verify(pk, msg, sig)
             .map_err(ProfileError::SignError)
     }
 
@@ -309,4 +344,4 @@ impl CryptoProfileTrait for ProfileKyberDilithium {
     fn sign_type(&self) -> SignType {
         SignType::Dilithium
     }
-} 
+}

@@ -18,6 +18,15 @@ A Rust crate for post-quantum cryptography in Industrial IoT systems.
 - Key rotation and management
 - Security level management
 
+## Security & Compliance Features
+
+Designed for **FIPS 140-3** and **IEC 62443** compliance in Critical Infrastructure:
+
+- **Power-On Self-Tests (POST)**: Automatically verifies cryptographic integrity (KAT/PCT) on startup.
+- **Integrity Checks**: Validates library integrity using SHA-256 checksums.
+- **Secure Memory**: Automated zeroization of sensitive key material using `Zeroize`.
+- **Audit Logging**: Structured security events for SIEM integration.
+- **Hardware Abstraction**: Ready for TPM 2.0 / HSM integration via `SecurityProvider` trait.
 ## Cryptographic Profiles
 
 The crate provides pre-defined combinations of KEM and signature algorithms, optimized for different IIoT scenarios:

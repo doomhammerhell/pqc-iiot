@@ -7,13 +7,13 @@
 //! 4. Use the configured profiles for cryptographic operations
 
 use pqc_iiot::{
-    crypto::profile::{
-        ProfileKyberFalcon,
-        ProfileSaberDilithium,
-        ProfileKyberDilithium,
-    },
     config::Config,
+    crypto::profile::ProfileKyberFalcon,
 };
+#[cfg(feature = "dilithium")]
+use pqc_iiot::crypto::profile::{ProfileKyberDilithium, ProfileSaberDilithium};
+// use pqc_iiot::crypto::traits::*;
+use pqc_iiot::crypto::profile::CryptoProfileTrait;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Example 1: Load configuration from TOML file
@@ -37,22 +37,34 @@ fn toml_config_example() -> Result<(), Box<dyn std::error::Error>> {
     println!("Loaded configuration:");
     println!("- Default profile: {}", config.default_profile());
     println!("- Security level: {}", config.security_level());
-    println!("- Rotation interval: {} seconds", config.rotation_interval());
+    println!(
+        "- Rotation interval: {} seconds",
+        config.rotation_interval()
+    );
     println!("- Metrics enabled: {}", config.metrics_enabled());
     println!("- Metrics interval: {} seconds", config.metrics_interval());
 
     // Create profile based on configuration
     let profile = match config.default_profile() {
         "ProfileKyberFalcon" => Box::new(ProfileKyberFalcon::new()) as Box<dyn CryptoProfileTrait>,
-        "ProfileSaberDilithium" => Box::new(ProfileSaberDilithium::new()) as Box<dyn CryptoProfileTrait>,
-        "ProfileKyberDilithium" => Box::new(ProfileKyberDilithium::new()) as Box<dyn CryptoProfileTrait>,
+        #[cfg(all(feature = "saber", feature = "dilithium"))]
+        "ProfileSaberDilithium" => {
+            Box::new(ProfileSaberDilithium::new()) as Box<dyn CryptoProfileTrait>
+        }
+        #[cfg(feature = "dilithium")]
+        "ProfileKyberDilithium" => {
+            Box::new(ProfileKyberDilithium::new()) as Box<dyn CryptoProfileTrait>
+        }
         _ => return Err("Invalid profile name".into()),
     };
 
     // Use the profile
     let (pk, sk) = profile.generate_keypair()?;
-    println!("Generated key pair (public key: {} bytes, secret key: {} bytes)", 
-             pk.len(), sk.len());
+    println!(
+        "Generated key pair (public key: {} bytes, secret key: {} bytes)",
+        pk.len(),
+        sk.len()
+    );
 
     Ok(())
 }
@@ -68,20 +80,32 @@ fn env_config_example() -> Result<(), Box<dyn std::error::Error>> {
     println!("Loaded configuration from environment:");
     println!("- Default profile: {}", config.default_profile());
     println!("- Security level: {}", config.security_level());
-    println!("- Rotation interval: {} seconds", config.rotation_interval());
+    println!(
+        "- Rotation interval: {} seconds",
+        config.rotation_interval()
+    );
 
     // Create profile based on configuration
     let profile = match config.default_profile() {
         "ProfileKyberFalcon" => Box::new(ProfileKyberFalcon::new()) as Box<dyn CryptoProfileTrait>,
-        "ProfileSaberDilithium" => Box::new(ProfileSaberDilithium::new()) as Box<dyn CryptoProfileTrait>,
-        "ProfileKyberDilithium" => Box::new(ProfileKyberDilithium::new()) as Box<dyn CryptoProfileTrait>,
+        #[cfg(all(feature = "saber", feature = "dilithium"))]
+        "ProfileSaberDilithium" => {
+            Box::new(ProfileSaberDilithium::new()) as Box<dyn CryptoProfileTrait>
+        }
+        #[cfg(feature = "dilithium")]
+        "ProfileKyberDilithium" => {
+            Box::new(ProfileKyberDilithium::new()) as Box<dyn CryptoProfileTrait>
+        }
         _ => return Err("Invalid profile name".into()),
     };
 
     // Use the profile
     let (pk, sk) = profile.generate_keypair()?;
-    println!("Generated key pair (public key: {} bytes, secret key: {} bytes)", 
-             pk.len(), sk.len());
+    println!(
+        "Generated key pair (public key: {} bytes, secret key: {} bytes)",
+        pk.len(),
+        sk.len()
+    );
 
     Ok(())
 }
@@ -92,22 +116,34 @@ fn default_config_example() -> Result<(), Box<dyn std::error::Error>> {
     println!("Using default configuration:");
     println!("- Default profile: {}", config.default_profile());
     println!("- Security level: {}", config.security_level());
-    println!("- Rotation interval: {} seconds", config.rotation_interval());
+    println!(
+        "- Rotation interval: {} seconds",
+        config.rotation_interval()
+    );
     println!("- Metrics enabled: {}", config.metrics_enabled());
     println!("- Metrics interval: {} seconds", config.metrics_interval());
 
     // Create profile based on default configuration
     let profile = match config.default_profile() {
         "ProfileKyberFalcon" => Box::new(ProfileKyberFalcon::new()) as Box<dyn CryptoProfileTrait>,
-        "ProfileSaberDilithium" => Box::new(ProfileSaberDilithium::new()) as Box<dyn CryptoProfileTrait>,
-        "ProfileKyberDilithium" => Box::new(ProfileKyberDilithium::new()) as Box<dyn CryptoProfileTrait>,
+        #[cfg(all(feature = "saber", feature = "dilithium"))]
+        "ProfileSaberDilithium" => {
+            Box::new(ProfileSaberDilithium::new()) as Box<dyn CryptoProfileTrait>
+        }
+        #[cfg(feature = "dilithium")]
+        "ProfileKyberDilithium" => {
+            Box::new(ProfileKyberDilithium::new()) as Box<dyn CryptoProfileTrait>
+        }
         _ => return Err("Invalid profile name".into()),
     };
 
     // Use the profile
     let (pk, sk) = profile.generate_keypair()?;
-    println!("Generated key pair (public key: {} bytes, secret key: {} bytes)", 
-             pk.len(), sk.len());
+    println!(
+        "Generated key pair (public key: {} bytes, secret key: {} bytes)",
+        pk.len(),
+        sk.len()
+    );
 
     Ok(())
-} 
+}

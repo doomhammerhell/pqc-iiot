@@ -4,9 +4,11 @@
 //! a lattice-based digital signature scheme that is resistant to
 //! quantum computer attacks.
 
-use core::fmt;
-use crate::crypto::traits::{PqcSignature, SecurityLevel, KeyRotation, Metrics};
+use crate::crypto::traits::{KeyRotation, Metrics, PqcSignature, SecurityLevel};
 use crate::error::Error;
+use core::fmt;
+use pqcrypto_dilithium::{dilithium2, dilithium3, dilithium5};
+use pqcrypto_traits::sign::{DetachedSignature, PublicKey, SecretKey};
 
 /// Security levels for Dilithium
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,7 +35,7 @@ impl fmt::Display for DilithiumSecurityLevel {
 pub struct Dilithium {
     security_level: DilithiumSecurityLevel,
     key_rotation_interval: core::time::Duration,
-    last_key_generation: core::time::Instant,
+    last_key_generation: std::time::Instant,
     metrics: DilithiumMetrics,
 }
 
@@ -47,17 +49,26 @@ struct DilithiumMetrics {
 }
 
 impl Dilithium {
-    /// Create a new Dilithium instance with the specified security level
-    pub fn new(security_level: DilithiumSecurityLevel) -> Self {
+    /// Create a new Dilithium instance with the default security level (Level3)
+    pub fn new() -> Self {
         Self {
-            security_level,
+            security_level: DilithiumSecurityLevel::Level3,
             key_rotation_interval: core::time::Duration::from_secs(3600),
-            last_key_generation: core::time::Instant::now(),
+            last_key_generation: std::time::Instant::now(),
             metrics: DilithiumMetrics::default(),
         }
     }
 
-    /// Set the key rotation interval
+    /// Create a new Dilithium instance with a specified security level
+    pub fn new_with_level(security_level: DilithiumSecurityLevel) -> Self {
+        Self {
+            security_level,
+            key_rotation_interval: core::time::Duration::from_secs(3600),
+            last_key_generation: std::time::Instant::now(),
+            metrics: DilithiumMetrics::default(),
+        }
+    }
+
     pub fn with_key_rotation_interval(mut self, interval: core::time::Duration) -> Self {
         self.key_rotation_interval = interval;
         self
@@ -68,30 +79,83 @@ impl PqcSignature for Dilithium {
     type Error = Error;
 
     fn generate_keypair(&self) -> Result<(Vec<u8>, Vec<u8>), Self::Error> {
-        let start = core::time::Instant::now();
-        // Implementation of key generation
-        let result = Ok((vec![], vec![])); // Placeholder
-        self.metrics.key_generation_time = start.elapsed();
-        self.metrics.operations_count += 1;
-        result
+        // let start = std::time::Instant::now();
+        let (pk, sk) = match self.security_level {
+            DilithiumSecurityLevel::Level2 => {
+                let (pk, sk) = dilithium2::keypair();
+                (pk.as_bytes().to_vec(), sk.as_bytes().to_vec())
+            }
+            DilithiumSecurityLevel::Level3 => {
+                let (pk, sk) = dilithium3::keypair();
+                (pk.as_bytes().to_vec(), sk.as_bytes().to_vec())
+            }
+            DilithiumSecurityLevel::Level5 => {
+                let (pk, sk) = dilithium5::keypair();
+                (pk.as_bytes().to_vec(), sk.as_bytes().to_vec())
+            }
+        };
+        // self.metrics.key_generation_time = start.elapsed();
+        // self.metrics.operations_count += 1;
+        Ok((pk, sk))
     }
 
     fn sign(&self, sk: &[u8], msg: &[u8]) -> Result<Vec<u8>, Self::Error> {
-        let start = core::time::Instant::now();
-        // Implementation of signing
-        let result = Ok(vec![]); // Placeholder
-        self.metrics.signing_time = start.elapsed();
-        self.metrics.operations_count += 1;
-        result
+        let start = std::time::Instant::now();
+        // Need to construct SecretKey from bytes.
+        // Assuming Keypair or SecretKey struct has from_bytes/from_slice.
+        // pqc_dilithium likely uses `SecretKey::from_bytes`.
+        // Also assuming `sign` method on SecretKey or detached_sign.
+
+        let signature = match self.security_level {
+            DilithiumSecurityLevel::Level2 => {
+                let sk = dilithium2::SecretKey::from_bytes(sk)
+                    .map_err(|e| Error::CryptoError(format!("Invalid secret key: {}", e)))?;
+                dilithium2::detached_sign(msg, &sk).as_bytes().to_vec()
+            }
+            DilithiumSecurityLevel::Level3 => {
+                let sk = dilithium3::SecretKey::from_bytes(sk)
+                    .map_err(|e| Error::CryptoError(format!("Invalid secret key: {}", e)))?;
+                dilithium3::detached_sign(msg, &sk).as_bytes().to_vec()
+            }
+            DilithiumSecurityLevel::Level5 => {
+                let sk = dilithium5::SecretKey::from_bytes(sk)
+                    .map_err(|e| Error::CryptoError(format!("Invalid secret key: {}", e)))?;
+                dilithium5::detached_sign(msg, &sk).as_bytes().to_vec()
+            }
+        };
+        // self.metrics.signing_time = start.elapsed();
+        // self.metrics.operations_count += 1;
+        Ok(signature)
     }
 
     fn verify(&self, pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<bool, Self::Error> {
-        let start = core::time::Instant::now();
-        // Implementation of verification
-        let result = Ok(true); // Placeholder
-        self.metrics.verification_time = start.elapsed();
-        self.metrics.operations_count += 1;
-        result
+        let start = std::time::Instant::now();
+        let result = match self.security_level {
+            DilithiumSecurityLevel::Level2 => {
+                let pk = dilithium2::PublicKey::from_bytes(pk)
+                    .map_err(|e| Error::CryptoError(format!("Invalid public key: {}", e)))?;
+                let sig = dilithium2::DetachedSignature::from_bytes(sig)
+                    .map_err(|e| Error::CryptoError(format!("Invalid signature: {}", e)))?;
+                dilithium2::verify_detached_signature(&sig, msg, &pk).is_ok()
+            }
+            DilithiumSecurityLevel::Level3 => {
+                let pk = dilithium3::PublicKey::from_bytes(pk)
+                    .map_err(|e| Error::CryptoError(format!("Invalid public key: {}", e)))?;
+                let sig = dilithium3::DetachedSignature::from_bytes(sig)
+                    .map_err(|e| Error::CryptoError(format!("Invalid signature: {}", e)))?;
+                dilithium3::verify_detached_signature(&sig, msg, &pk).is_ok()
+            }
+            DilithiumSecurityLevel::Level5 => {
+                let pk = dilithium5::PublicKey::from_bytes(pk)
+                    .map_err(|e| Error::CryptoError(format!("Invalid public key: {}", e)))?;
+                let sig = dilithium5::DetachedSignature::from_bytes(sig)
+                    .map_err(|e| Error::CryptoError(format!("Invalid signature: {}", e)))?;
+                dilithium5::verify_detached_signature(&sig, msg, &pk).is_ok()
+            }
+        };
+        // self.metrics.verification_time = start.elapsed();
+        // self.metrics.operations_count += 1;
+        Ok(result)
     }
 }
 
@@ -117,7 +181,7 @@ impl SecurityLevel for Dilithium {
 
 impl KeyRotation for Dilithium {
     fn rotate_keys(&mut self) -> Result<(), crate::crypto::traits::CryptoError> {
-        self.last_key_generation = core::time::Instant::now();
+        self.last_key_generation = std::time::Instant::now();
         Ok(())
     }
 
@@ -139,4 +203,4 @@ impl Metrics for Dilithium {
     fn reset_metrics(&mut self) {
         self.metrics = DilithiumMetrics::default();
     }
-} 
+}

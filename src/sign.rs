@@ -3,7 +3,7 @@
 use crate::{Error, Result};
 use core::marker::PhantomData;
 use heapless::Vec;
-use pqcrypto_falcon::falcon1024;
+use pqcrypto_falcon::{falcon1024, falcon512};
 use pqcrypto_traits::sign::{DetachedSignature, PublicKey, SecretKey};
 use zeroize::Zeroize;
 
@@ -12,7 +12,7 @@ pub const MAX_PUBLIC_KEY_SIZE: usize = 1793;
 /// Maximum size for Falcon secret keys
 pub const MAX_SECRET_KEY_SIZE: usize = 2305;
 /// Maximum size for Falcon signatures
-pub const MAX_SIGNATURE_SIZE: usize = 1280;
+pub const MAX_SIGNATURE_SIZE: usize = 2305;
 
 /// Falcon signature implementation
 #[derive(Debug, Default)]
@@ -37,6 +37,7 @@ impl<const N: usize> Falcon<N> {
         &mut self,
     ) -> Result<(Vec<u8, MAX_PUBLIC_KEY_SIZE>, Vec<u8, MAX_SECRET_KEY_SIZE>)> {
         let (pk, sk) = falcon1024::keypair();
+
         let mut public_key = Vec::new();
         let mut secret_key = Vec::new();
 
@@ -55,25 +56,46 @@ impl<const N: usize> Falcon<N> {
 
     /// Signs a message using a secret key
     pub fn sign(&self, message: &[u8], secret_key: &[u8]) -> Result<Vec<u8, MAX_SIGNATURE_SIZE>> {
-        let sk = falcon1024::SecretKey::from_bytes(secret_key).map_err(|_| Error::InvalidInput)?;
-        let signature = falcon1024::detached_sign(message, &sk);
         let mut sig_bytes = Vec::new();
 
-        sig_bytes
-            .extend_from_slice(signature.as_bytes())
-            .map_err(|_| Error::BufferTooSmall)?;
+        if secret_key.len() == 1281 {
+            let sk = falcon512::SecretKey::from_bytes(secret_key)
+                .map_err(|_| Error::InvalidInput("Invalid secret key".to_string()))?;
+            let signature = falcon512::detached_sign(message, &sk);
+            sig_bytes
+                .extend_from_slice(signature.as_bytes())
+                .map_err(|_| Error::BufferTooSmall)?;
+        } else {
+            let sk = falcon1024::SecretKey::from_bytes(secret_key)
+                .map_err(|_| Error::InvalidInput("Invalid secret key".to_string()))?;
+            let signature = falcon1024::detached_sign(message, &sk);
+            sig_bytes
+                .extend_from_slice(signature.as_bytes())
+                .map_err(|_| Error::BufferTooSmall)?;
+        }
 
         Ok(sig_bytes)
     }
 
     /// Verifies a signature using a public key
     pub fn verify(&self, message: &[u8], signature: &[u8], public_key: &[u8]) -> Result<()> {
-        let pk = falcon1024::PublicKey::from_bytes(public_key).map_err(|_| Error::InvalidInput)?;
-        let sig = falcon1024::DetachedSignature::from_bytes(signature)
-            .map_err(|_| Error::InvalidInput)?;
+        if public_key.len() == 897 {
+            let pk = falcon512::PublicKey::from_bytes(public_key)
+                .map_err(|_| Error::InvalidInput("Invalid public key".to_string()))?;
+            let sig = falcon512::DetachedSignature::from_bytes(signature)
+                .map_err(|_| Error::InvalidInput("Invalid signature".to_string()))?;
 
-        falcon1024::verify_detached_signature(&sig, message, &pk)
-            .map_err(|_| Error::SignatureVerification)
+            falcon512::verify_detached_signature(&sig, message, &pk)
+                .map_err(|_| Error::SignatureVerification("Verification failed".to_string()))
+        } else {
+            let pk = falcon1024::PublicKey::from_bytes(public_key)
+                .map_err(|_| Error::InvalidInput("Invalid public key".to_string()))?;
+            let sig = falcon1024::DetachedSignature::from_bytes(signature)
+                .map_err(|_| Error::InvalidInput("Invalid signature".to_string()))?;
+
+            falcon1024::verify_detached_signature(&sig, message, &pk)
+                .map_err(|_| Error::SignatureVerification("Verification failed".to_string()))
+        }
     }
 }
 

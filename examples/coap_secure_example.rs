@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Enviar requisição segura com tratamento de erro
     let path = "secure/resource";
     let payload = b"Hello, secure CoAP!";
-    match client.send_request(path, payload) {
+    match client.post(server_addr, path, payload) {
         Ok(response) => {
             println!("Resposta recebida com sucesso: {:?}", response);
         }
