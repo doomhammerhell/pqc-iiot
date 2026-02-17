@@ -7,9 +7,9 @@
 //! - Key Rotation
 //! - Performance Metrics
 
-use pqc_iiot::{Falcon, FalconSecurityLevel, Kyber, KyberSecurityLevel};
 #[cfg(feature = "dilithium")]
 use pqc_iiot::{Dilithium, DilithiumSecurityLevel};
+use pqc_iiot::{Falcon, FalconSecurityLevel, Kyber, KyberSecurityLevel};
 #[cfg(feature = "saber")]
 use pqc_iiot::{Saber, SaberSecurityLevel};
 // use pqc_iiot::crypto::traits::{KeyRotation, Metrics, PqcKEM, PqcSignature, SecurityLevel};

@@ -7,9 +7,7 @@
 //! 4. Sign and verify messages
 //! 5. Handle errors
 
-use pqc_iiot::crypto::profile::{
-    CryptoProfileTrait, ProfileKyberFalcon,
-};
+use pqc_iiot::crypto::profile::{CryptoProfileTrait, ProfileKyberFalcon};
 #[cfg(feature = "dilithium")]
 use pqc_iiot::crypto::profile::{ProfileKyberDilithium, ProfileSaberDilithium};
 

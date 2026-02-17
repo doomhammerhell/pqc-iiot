@@ -13,7 +13,7 @@ use rand::{RngCore, SeedableRng};
 const NONCE_SIZE: usize = 12;
 
 /// Hybrid encryption packet structure:
-/// [ Capsule Length (2 bytes BE) ] [ Capsule ] [ Nonce (12 bytes) ] [ Ciphertext (includes Tag) ]
+/// \[ Capsule Length (2 bytes BE) \] \[ Capsule \] \[ Nonce (12 bytes) \] \[ Ciphertext (includes Tag) \]
 pub fn encrypt(target_pk: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
     // 1. Determine Kyber level from Key Length
     let kyber = match target_pk.len() {
@@ -65,7 +65,7 @@ pub fn encrypt(target_pk: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
 ///
 /// Expectations:
 /// - My Kyber Secret Key (`my_sk`) matches the public key used for encryption.
-///   Packet format: `[ Length(2) ] [ Capsule ] [ Nonce(12) ] [ Ciphertext ]`
+///   Packet format: `\[ Length(2) \] \[ Capsule \] \[ Nonce(12) \] \[ Ciphertext \]`
 pub fn decrypt(my_sk: &[u8], packet: &[u8]) -> Result<Vec<u8>> {
     // 1. Parse header
     if packet.len() < 2 {

@@ -6,12 +6,9 @@
 //! 3. Create profiles based on configuration
 //! 4. Use the configured profiles for cryptographic operations
 
-use pqc_iiot::{
-    config::Config,
-    crypto::profile::ProfileKyberFalcon,
-};
 #[cfg(feature = "dilithium")]
 use pqc_iiot::crypto::profile::{ProfileKyberDilithium, ProfileSaberDilithium};
+use pqc_iiot::{config::Config, crypto::profile::ProfileKyberFalcon};
 // use pqc_iiot::crypto::traits::*;
 use pqc_iiot::crypto::profile::CryptoProfileTrait;
 

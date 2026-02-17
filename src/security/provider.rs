@@ -10,7 +10,6 @@ use pqcrypto_kyber::kyber1024::{
 use pqcrypto_traits::kem::{Ciphertext as _, SecretKey as _, SharedSecret};
 use pqcrypto_traits::sign::{DetachedSignature, SecretKey as _};
 
-
 /// Trait for abstracting cryptographic operations.
 /// This allows integrating Hardware Security Modules (HSM), TPMs, or TEEs.
 pub trait SecurityProvider: Send + Sync {
