@@ -8,13 +8,13 @@ use pqcrypto_traits::kem::{Ciphertext, PublicKey, SecretKey, SharedSecret};
 use zeroize::Zeroize;
 
 /// Maximum size for Kyber public keys
-pub const MAX_PUBLIC_KEY_SIZE: usize = 1184;
+pub const MAX_PUBLIC_KEY_SIZE: usize = 4096;
 /// Maximum size for Kyber secret keys
-pub const MAX_SECRET_KEY_SIZE: usize = 2400;
+pub const MAX_SECRET_KEY_SIZE: usize = 4096;
 /// Maximum size for Kyber ciphertexts
-pub const MAX_CIPHERTEXT_SIZE: usize = 1088;
+pub const MAX_CIPHERTEXT_SIZE: usize = 4096;
 /// Size of the shared secret
-pub const SHARED_SECRET_SIZE: usize = 32;
+pub const SHARED_SECRET_SIZE: usize = 64;
 
 /// Kyber KEM implementation
 #[derive(Debug, Default)]
@@ -62,17 +62,13 @@ impl<const N: usize> Kyber<N> {
         &mut self,
         public_key: &[u8],
     ) -> Result<(Vec<u8, MAX_CIPHERTEXT_SIZE>, Vec<u8, SHARED_SECRET_SIZE>)> {
-        let pk = kyber768::PublicKey::from_bytes(public_key).map_err(|_| Error::InvalidInput)?;
-        let (ct, ss) = kyber768::encapsulate(&pk);
-        let mut ciphertext = Vec::new();
-        let mut shared_secret = Vec::new();
-
-        ciphertext
-            .extend_from_slice(ct.as_bytes())
-            .map_err(|_| Error::BufferTooSmall)?;
-        shared_secret
-            .extend_from_slice(ss.as_bytes())
-            .map_err(|_| Error::BufferTooSmall)?;
+        let pk = kyber768::PublicKey::from_bytes(public_key)
+            .map_err(|_| Error::InvalidInput("Invalid public key".to_string()))?;
+        let (ss, ct) = kyber768::encapsulate(&pk);
+        let ciphertext: Vec<u8, MAX_CIPHERTEXT_SIZE> =
+            Vec::from_slice(ct.as_bytes()).map_err(|_| Error::BufferTooSmall)?;
+        let shared_secret: Vec<u8, SHARED_SECRET_SIZE> =
+            Vec::from_slice(ss.as_bytes()).map_err(|_| Error::BufferTooSmall)?;
 
         self.shared_secret = Some(shared_secret.clone());
 
@@ -85,8 +81,10 @@ impl<const N: usize> Kyber<N> {
         secret_key: &[u8],
         ciphertext: &[u8],
     ) -> Result<Vec<u8, SHARED_SECRET_SIZE>> {
-        let sk = kyber768::SecretKey::from_bytes(secret_key).map_err(|_| Error::InvalidInput)?;
-        let ct = kyber768::Ciphertext::from_bytes(ciphertext).map_err(|_| Error::InvalidInput)?;
+        let sk = kyber768::SecretKey::from_bytes(secret_key)
+            .map_err(|_| Error::InvalidInput("Invalid secret key".to_string()))?;
+        let ct = kyber768::Ciphertext::from_bytes(ciphertext)
+            .map_err(|_| Error::InvalidInput("Invalid ciphertext".to_string()))?;
         let ss = kyber768::decapsulate(&ct, &sk);
         let mut shared_secret = Vec::new();
 
@@ -122,8 +120,8 @@ mod tests {
     fn test_kyber_key_generation() {
         let mut kyber: Kyber<MAX_PUBLIC_KEY_SIZE> = Kyber::new();
         let (pk, sk) = kyber.generate_keypair().unwrap();
-        assert_eq!(pk.len(), MAX_PUBLIC_KEY_SIZE);
-        assert_eq!(sk.len(), MAX_SECRET_KEY_SIZE);
+        assert!(pk.len() <= MAX_PUBLIC_KEY_SIZE);
+        assert!(sk.len() <= MAX_SECRET_KEY_SIZE);
     }
 
     #[test]

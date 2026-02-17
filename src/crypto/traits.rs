@@ -331,4 +331,4 @@ pub trait Metrics {
     ///
     /// Resets all performance metrics to their initial values
     fn reset_metrics(&mut self);
-} 
+}

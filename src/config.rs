@@ -58,8 +58,11 @@ pub struct ProfileConfig {
     /// Performance monitoring settings
     pub metrics: MetricsConfig,
     /// Profile-specific settings
+    /// Kyber + Falcon profile settings
     pub kyber_falcon: KyberFalconConfig,
+    /// SABER + Dilithium profile settings
     pub saber_dilithium: SaberDilithiumConfig,
+    /// Kyber + Dilithium profile settings
     pub kyber_dilithium: KyberDilithiumConfig,
 }
 
@@ -151,20 +154,22 @@ pub struct LoggingConfig {
     pub security: bool,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Config {
-    /// Create a new configuration with default values
+    /// Create a new configuration with defaults
     pub fn new() -> Self {
         Self {
             profiles: ProfileConfig {
                 default: DefaultProfileConfig {
                     profile: "ProfileKyberDilithium".to_string(),
                 },
-                security: SecurityConfig {
-                    level: 3,
-                },
-                rotation: RotationConfig {
-                    interval: 3600,
-                },
+                security: SecurityConfig { level: 3 },
+                rotation: RotationConfig { interval: 3600 },
                 metrics: MetricsConfig {
                     enabled: true,
                     interval: 60,
@@ -204,11 +209,10 @@ impl Config {
     pub fn from_file(path: &str) -> Result<Self, ConfigError> {
         use std::fs;
 
-        let contents = fs::read_to_string(path)
-            .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+        let contents =
+            fs::read_to_string(path).map_err(|e| ConfigError::LoadError(e.to_string()))?;
 
-        toml::from_str(&contents)
-            .map_err(|e| ConfigError::ParseError(e.to_string()))
+        toml::from_str(&contents).map_err(|e| ConfigError::ParseError(e.to_string()))
     }
 
     #[cfg(feature = "std")]
@@ -223,12 +227,14 @@ impl Config {
         }
 
         if let Ok(level) = env::var("PQC_IIOT_SECURITY_LEVEL") {
-            config.profiles.security.level = level.parse()
+            config.profiles.security.level = level
+                .parse()
                 .map_err(|_| ConfigError::InvalidValue("security level".to_string()))?;
         }
 
         if let Ok(interval) = env::var("PQC_IIOT_ROTATION_INTERVAL") {
-            config.profiles.rotation.interval = interval.parse()
+            config.profiles.rotation.interval = interval
+                .parse()
                 .map_err(|_| ConfigError::InvalidValue("rotation interval".to_string()))?;
         }
 
@@ -259,4 +265,4 @@ impl Config {
     pub fn metrics_interval(&self) -> u64 {
         self.profiles.metrics.interval
     }
-} 
+}
