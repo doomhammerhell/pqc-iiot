@@ -1,4 +1,4 @@
-# PQC-IIoT: Post-Quantum Cryptography for Industrial IoT
+# PQC-IIoT Documentation v1.0
 
 **PQC-IIoT** is a Rust-based security library designed to bring NIST-standard post-quantum cryptography (Kyber, Falcon) to resource-constrained Industrial IoT (IIoT) devices. It bridges the gap between modern cryptographic research and practical, mission-critical industrial applications.
 

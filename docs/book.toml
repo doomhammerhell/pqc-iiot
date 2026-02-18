@@ -10,6 +10,6 @@ src = "src"
 build-dir = "book"
 
 [output.html]
-additional-css = ["custom.css"]
+
 git-repository-url = "https://github.com/doomhammerhell/pqc-iiot"
 edit-url-template = "https://github.com/doomhammerhell/pqc-iiot/edit/main/docs/src/{path}"
