@@ -25,3 +25,7 @@ pqc-iiot = "0.1.0"
 ```
 
 See the [Usage Guide](usage.md) for detailed integration steps.
+
+## License
+
+This project is licensed under the MIT License.

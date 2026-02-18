@@ -1,6 +1,6 @@
 # Summary
 
-- [Introduction](README.md)
+- [Introduction](index.md)
 - [Security Architecture](architecture.md)
   - [Threat Model](security/threat_model.md)
   - [FIPS 140-3 Compliance](security/compliance.md)
