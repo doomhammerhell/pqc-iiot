@@ -2,6 +2,8 @@
 
 A Rust crate for post-quantum cryptography in Industrial IoT systems.
 
+**[📚 Full Documentation (NIST/Academic Standard)](https://doomhammerhell.github.io/pqc-iiot/)**
+
 ## Features
 
 - Post-quantum cryptographic algorithms:
