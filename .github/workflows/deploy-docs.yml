@@ -25,7 +25,9 @@ jobs:
           echo "$PWD/mdbook" >> $GITHUB_PATH
 
       - name: Build Book
-        run: mdbook build docs
+        run: |
+          mdbook build docs
+          touch docs/book/.nojekyll
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
