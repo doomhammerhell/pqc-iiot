@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Threat Model - PQC-IIoT Security Library</title>
+        <title>Performance &amp; Benchmarks - PQC-IIoT Security Library</title>
 
 
         <!-- Custom HTML head -->
@@ -88,7 +88,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded "><a href="../index.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li class="chapter-item expanded "><a href="../architecture.html"><strong aria-hidden="true">2.</strong> Security Architecture</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/threat_model.html" class="active"><strong aria-hidden="true">2.1.</strong> Threat Model</a></li><li class="chapter-item expanded "><a href="../security/compliance.html"><strong aria-hidden="true">2.2.</strong> FIPS 140-3 Compliance</a></li></ol></li><li class="chapter-item expanded "><a href="../usage.html"><strong aria-hidden="true">3.</strong> Usage Guide</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../usage/mqtt.html"><strong aria-hidden="true">3.1.</strong> MQTT Integration</a></li><li class="chapter-item expanded "><a href="../usage/coap.html"><strong aria-hidden="true">3.2.</strong> CoAP Integration</a></li></ol></li><li class="chapter-item expanded "><a href="../hardware.html"><strong aria-hidden="true">4.</strong> Hardware Integration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../hardware/hal_internals.html"><strong aria-hidden="true">4.1.</strong> HAL Internals (Architecture)</a></li><li class="chapter-item expanded "><a href="../hardware/tpm.html"><strong aria-hidden="true">4.2.</strong> TPM 2.0</a></li><li class="chapter-item expanded "><a href="../hardware/secure_element.html"><strong aria-hidden="true">4.3.</strong> Secure Elements</a></li></ol></li><li class="chapter-item expanded "><a href="../api.html"><strong aria-hidden="true">5.</strong> API Reference</a></li><li class="chapter-item expanded "><a href="../crypto/math.html"><strong aria-hidden="true">6.</strong> Mathematical Foundations</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../crypto/proofs.html"><strong aria-hidden="true">6.1.</strong> Security Proofs & Reductions</a></li></ol></li><li class="chapter-item expanded "><a href="../security/formal_verification.html"><strong aria-hidden="true">7.</strong> Formal Security Analysis</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/fips_mapping.html"><strong aria-hidden="true">7.1.</strong> FIPS 140-3 Mapping</a></li></ol></li><li class="chapter-item expanded "><a href="../performance/benchmarks.html"><strong aria-hidden="true">8.</strong> Performance & Benchmarks</a></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded "><a href="../index.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li class="chapter-item expanded "><a href="../architecture.html"><strong aria-hidden="true">2.</strong> Security Architecture</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/threat_model.html"><strong aria-hidden="true">2.1.</strong> Threat Model</a></li><li class="chapter-item expanded "><a href="../security/compliance.html"><strong aria-hidden="true">2.2.</strong> FIPS 140-3 Compliance</a></li></ol></li><li class="chapter-item expanded "><a href="../usage.html"><strong aria-hidden="true">3.</strong> Usage Guide</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../usage/mqtt.html"><strong aria-hidden="true">3.1.</strong> MQTT Integration</a></li><li class="chapter-item expanded "><a href="../usage/coap.html"><strong aria-hidden="true">3.2.</strong> CoAP Integration</a></li></ol></li><li class="chapter-item expanded "><a href="../hardware.html"><strong aria-hidden="true">4.</strong> Hardware Integration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../hardware/hal_internals.html"><strong aria-hidden="true">4.1.</strong> HAL Internals (Architecture)</a></li><li class="chapter-item expanded "><a href="../hardware/tpm.html"><strong aria-hidden="true">4.2.</strong> TPM 2.0</a></li><li class="chapter-item expanded "><a href="../hardware/secure_element.html"><strong aria-hidden="true">4.3.</strong> Secure Elements</a></li></ol></li><li class="chapter-item expanded "><a href="../api.html"><strong aria-hidden="true">5.</strong> API Reference</a></li><li class="chapter-item expanded "><a href="../crypto/math.html"><strong aria-hidden="true">6.</strong> Mathematical Foundations</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../crypto/proofs.html"><strong aria-hidden="true">6.1.</strong> Security Proofs & Reductions</a></li></ol></li><li class="chapter-item expanded "><a href="../security/formal_verification.html"><strong aria-hidden="true">7.</strong> Formal Security Analysis</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/fips_mapping.html"><strong aria-hidden="true">7.1.</strong> FIPS 140-3 Mapping</a></li></ol></li><li class="chapter-item expanded "><a href="../performance/benchmarks.html" class="active"><strong aria-hidden="true">8.</strong> Performance & Benchmarks</a></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -150,7 +150,7 @@
                         <a href="https://github.com/doomhammerhell/pqc-iiot" title="Git repository" aria-label="Git repository">
                             <i id="git-repository-button" class="fa fa-github"></i>
                         </a>
-                        <a href="https://github.com/doomhammerhell/pqc-iiot/edit/main/docs/src/src/security/threat_model.md" title="Suggest an edit" aria-label="Suggest an edit">
+                        <a href="https://github.com/doomhammerhell/pqc-iiot/edit/main/docs/src/src/performance/benchmarks.md" title="Suggest an edit" aria-label="Suggest an edit">
                             <i id="git-edit-button" class="fa fa-edit"></i>
                         </a>
 
@@ -179,43 +179,70 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="threat-model"><a class="header" href="#threat-model">Threat Model</a></h1>
-<p>This document outlines the threats PQC-IIoT is designed to mitigate.</p>
-<h2 id="1-store-now-decrypt-later-sndl"><a class="header" href="#1-store-now-decrypt-later-sndl">1. "Store Now, Decrypt Later" (SNDL)</a></h2>
-<p><strong>Threat</strong>: Attackers record encrypted traffic today, intending to decrypt it years later when a sufficiently powerful quantum computer becomes available.
-<strong>Mitigation</strong>: Use of Kyber (KEM) ensures that session keys cannot be retroactively recovered by quantum algorithms like Shor's algorithm.</p>
-<h2 id="2-identity-impersonation"><a class="header" href="#2-identity-impersonation">2. Identity Impersonation</a></h2>
-<p><strong>Threat</strong>: An attacker attempts to masquerade as a legitimate sensor or controller to inject false data or commands.
-<strong>Mitigation</strong>: Falcon digital signatures provide strong, quantum-resistant authentication. Strict Allow-listing of public keys prevents unauthorized devices from joining the network.</p>
-<h2 id="3-replay-attacks"><a class="header" href="#3-replay-attacks">3. Replay Attacks</a></h2>
-<p><strong>Threat</strong>: An attacker captures a valid command (e.g., "Open Valve") and re-transmits it later.
-<strong>Mitigation</strong>: Encrypted packets contain a sequential counter. The receiver tracks the <code>last_seen</code> counter for each peer and rejects duplicates or out-of-order packets.</p>
-<h2 id="4-key-extraction-from-memory"><a class="header" href="#4-key-extraction-from-memory">4. Key Extraction from Memory</a></h2>
-<p><strong>Threat</strong>: Malware or physical access allows an attacker to dump device RAM and extract private keys.
-<strong>Mitigation</strong>:</p>
+                        <h1 id="performance-benchmarks--analysis"><a class="header" href="#performance-benchmarks--analysis">Performance Benchmarks &amp; Analysis</a></h1>
+<p>This chapter details the performance characteristics of PQC-IIoT primitives.</p>
+<h2 id="methodology"><a class="header" href="#methodology">Methodology</a></h2>
+<p>Benchmarks are collected using <code>criterion</code> on x86_64 architecture (AVX2 enabled where applicable) and simulated for ARM Cortex-M4 (32-bit).</p>
 <ul>
-<li><strong>Hardware</strong>: Integration with TPM 2.0 ensures keys are non-exportable and operations happen inside the secure element.</li>
-<li><strong>Software</strong>: The <code>software</code> provider uses the <code>zeroize</code> crate to wipe keys from memory immediately after use or on drop.</li>
+<li><strong>Rust Version</strong>: 1.70+</li>
+<li><strong>Optimization Level</strong>: <code>debug</code> (unoptimized) vs <code>release</code> (<code>opt-level = 3</code>, <code>lto = true</code>)</li>
 </ul>
-<h2 id="5-side-channel-attacks-sca"><a class="header" href="#5-side-channel-attacks-sca">5. Side-Channel Attacks (SCA)</a></h2>
-<p><strong>Threat</strong>: Analyzing power consumption or timing to deduce private keys.
-<strong>Mitigation</strong>:</p>
+<h2 id="cycle-counts-reference"><a class="header" href="#cycle-counts-reference">Cycle Counts (Reference)</a></h2>
+<h3 id="key-encapsulation-kyber-768"><a class="header" href="#key-encapsulation-kyber-768">Key Encapsulation (Kyber-768)</a></h3>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Operation</th><th style="text-align: left">x86_64 (Cycles)</th><th style="text-align: left">ARM Cortex-M4 (Cycles)</th><th style="text-align: left">Latency (100MHz CPU)</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong>KeyGen</strong></td><td style="text-align: left">~35,000</td><td style="text-align: left">~420,000</td><td style="text-align: left">4.2 ms</td></tr>
+<tr><td style="text-align: left"><strong>Encaps</strong></td><td style="text-align: left">~45,000</td><td style="text-align: left">~510,000</td><td style="text-align: left">5.1 ms</td></tr>
+<tr><td style="text-align: left"><strong>Decaps</strong></td><td style="text-align: left">~52,000</td><td style="text-align: left">~580,000</td><td style="text-align: left">5.8 ms</td></tr>
+</tbody></table>
+</div>
+<h3 id="digital-signatures-falcon-512"><a class="header" href="#digital-signatures-falcon-512">Digital Signatures (Falcon-512)</a></h3>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Operation</th><th style="text-align: left">x86_64 (Cycles)</th><th style="text-align: left">ARM Cortex-M4 (Cycles)</th><th style="text-align: left">Latency (100MHz CPU)</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong>KeyGen</strong></td><td style="text-align: left">~8,000,000</td><td style="text-align: left">~120,000,000</td><td style="text-align: left">1.2 s</td></tr>
+<tr><td style="text-align: left"><strong>Sign</strong></td><td style="text-align: left">~300,000</td><td style="text-align: left">~4,500,000</td><td style="text-align: left">45 ms</td></tr>
+<tr><td style="text-align: left"><strong>Verify</strong></td><td style="text-align: left">~40,000</td><td style="text-align: left">~600,000</td><td style="text-align: left">6.0 ms</td></tr>
+</tbody></table>
+</div>
+<blockquote>
+<p><strong>Note</strong>: Falcon KeyGen is computationally expensive and typically performed once during provisioning or on a more powerful gateway device, not the end-node sensor.</p>
+</blockquote>
+<h2 id="stack-usage-analysis"><a class="header" href="#stack-usage-analysis">Stack Usage Analysis</a></h2>
+<p>For embedded targets (<code>no_std</code>), stack usage is critical.</p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Component</th><th style="text-align: left">Stack Usage (Approx.)</th><th style="text-align: left">Notes</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong>Kyber-768 Context</strong></td><td style="text-align: left">3.5 KB</td><td style="text-align: left">Matrices and error vectors.</td></tr>
+<tr><td style="text-align: left"><strong>Falcon-512 Signature</strong></td><td style="text-align: left">32 KB</td><td style="text-align: left">FFT recursion depth requiring large stack.</td></tr>
+<tr><td style="text-align: left"><strong>Falcon-512 Config</strong></td><td style="text-align: left">6 KB</td><td style="text-align: left">Verification only (much lighter than signing).</td></tr>
+<tr><td style="text-align: left"><strong>MQTT Packet Buffer</strong></td><td style="text-align: left">Configurable</td><td style="text-align: left">Default 1KB buffer in <code>heapless::Vec</code>.</td></tr>
+</tbody></table>
+</div>
+<p><strong>Recommendation</strong>: Devices performing Falcon signing should have at least <strong>64KB RAM</strong>. Devices only verifying signatures can operate with <strong>16KB RAM</strong>.</p>
+<h2 id="latency-impact-on-protocols"><a class="header" href="#latency-impact-on-protocols">Latency Impact on Protocols</a></h2>
+<h3 id="mqtt-handshake-connect--subscribe-hybrid"><a class="header" href="#mqtt-handshake-connect--subscribe-hybrid">MQTT Handshake (Connect + Subscribe Hybrid)</a></h3>
+<ol>
+<li><strong>TCP Connect</strong>: ~1 RTT</li>
+<li><strong>MQTT Connect</strong>: ~1 RTT</li>
+<li><strong>PQC Handshake (Publish PubKey)</strong>:
 <ul>
-<li>Underlying libraries (<code>pqcrypto-*</code>) utilize constant-time implementations where available.</li>
-<li>Hardware offloading (TPM) provides physical resistance to SCA.</li>
+<li>Payload: 1184 bytes (Kyber PK)</li>
+<li>Overhead: Fragmentation on LoRaWAN/Zigbee.</li>
+<li>Time: Transmission time dominates execution time on low-bandwidth links.</li>
+</ul>
+</li>
+</ol>
+<h3 id="coap-udp"><a class="header" href="#coap-udp">CoAP (UDP)</a></h3>
+<ul>
+<li><strong>Kyber Ciphertext</strong>: 1088 bytes.</li>
+<li><strong>Fragmentation</strong>: exceed standard MTU (1280 bytes for IPv6 usually safe, but strict 802.15.4 frames are 127 bytes).</li>
+<li><strong>Strategy</strong>: Use Block-wise transfer (Block2) for key exchange payloads.</li>
 </ul>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../architecture.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../security/fips_mapping.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../security/compliance.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                                <i class="fa fa-angle-right"></i>
-                            </a>
 
                         <div style="clear: both"></div>
                     </nav>
@@ -223,13 +250,10 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../architecture.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../security/fips_mapping.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../security/compliance.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                        <i class="fa fa-angle-right"></i>
-                    </a>
             </nav>
 
         </div>

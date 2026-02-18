@@ -88,7 +88,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded "><a href="../index.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li class="chapter-item expanded "><a href="../architecture.html"><strong aria-hidden="true">2.</strong> Security Architecture</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/threat_model.html"><strong aria-hidden="true">2.1.</strong> Threat Model</a></li><li class="chapter-item expanded "><a href="../security/compliance.html"><strong aria-hidden="true">2.2.</strong> FIPS 140-3 Compliance</a></li></ol></li><li class="chapter-item expanded "><a href="../usage.html"><strong aria-hidden="true">3.</strong> Usage Guide</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../usage/mqtt.html" class="active"><strong aria-hidden="true">3.1.</strong> MQTT Integration</a></li><li class="chapter-item expanded "><a href="../usage/coap.html"><strong aria-hidden="true">3.2.</strong> CoAP Integration</a></li></ol></li><li class="chapter-item expanded "><a href="../hardware.html"><strong aria-hidden="true">4.</strong> Hardware Integration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../hardware/tpm.html"><strong aria-hidden="true">4.1.</strong> TPM 2.0</a></li><li class="chapter-item expanded "><a href="../hardware/secure_element.html"><strong aria-hidden="true">4.2.</strong> Secure Elements</a></li></ol></li><li class="chapter-item expanded "><a href="../api.html"><strong aria-hidden="true">5.</strong> API Reference</a></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded "><a href="../index.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li class="chapter-item expanded "><a href="../architecture.html"><strong aria-hidden="true">2.</strong> Security Architecture</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/threat_model.html"><strong aria-hidden="true">2.1.</strong> Threat Model</a></li><li class="chapter-item expanded "><a href="../security/compliance.html"><strong aria-hidden="true">2.2.</strong> FIPS 140-3 Compliance</a></li></ol></li><li class="chapter-item expanded "><a href="../usage.html"><strong aria-hidden="true">3.</strong> Usage Guide</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../usage/mqtt.html" class="active"><strong aria-hidden="true">3.1.</strong> MQTT Integration</a></li><li class="chapter-item expanded "><a href="../usage/coap.html"><strong aria-hidden="true">3.2.</strong> CoAP Integration</a></li></ol></li><li class="chapter-item expanded "><a href="../hardware.html"><strong aria-hidden="true">4.</strong> Hardware Integration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../hardware/hal_internals.html"><strong aria-hidden="true">4.1.</strong> HAL Internals (Architecture)</a></li><li class="chapter-item expanded "><a href="../hardware/tpm.html"><strong aria-hidden="true">4.2.</strong> TPM 2.0</a></li><li class="chapter-item expanded "><a href="../hardware/secure_element.html"><strong aria-hidden="true">4.3.</strong> Secure Elements</a></li></ol></li><li class="chapter-item expanded "><a href="../api.html"><strong aria-hidden="true">5.</strong> API Reference</a></li><li class="chapter-item expanded "><a href="../crypto/math.html"><strong aria-hidden="true">6.</strong> Mathematical Foundations</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../crypto/proofs.html"><strong aria-hidden="true">6.1.</strong> Security Proofs & Reductions</a></li></ol></li><li class="chapter-item expanded "><a href="../security/formal_verification.html"><strong aria-hidden="true">7.</strong> Formal Security Analysis</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/fips_mapping.html"><strong aria-hidden="true">7.1.</strong> FIPS 140-3 Mapping</a></li></ol></li><li class="chapter-item expanded "><a href="../performance/benchmarks.html"><strong aria-hidden="true">8.</strong> Performance & Benchmarks</a></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -218,7 +218,51 @@ async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
 let trusted_keys = load_trusted_keys(); 
 client.add_trusted_peer("controller_01", trusted_keys.falcon_pk);
 <span class="boring">}</span></code></pre></pre>
-
+<h2 id="protocol-specification"><a class="header" href="#protocol-specification">Protocol Specification</a></h2>
+<p>This section details the byte-level packet formats used for secure communication over MQTT.</p>
+<h3 id="topic-structure"><a class="header" href="#topic-structure">Topic Structure</a></h3>
+<ul>
+<li><strong><code>pqc/keys/{client_id}</code></strong>: Retained messages containing the client's Public Keys.</li>
+<li><strong><code>{app_topic}</code></strong>: Application data topics (e.g., <code>sensors/temp</code>). Data on these topics is encrypted.</li>
+</ul>
+<h3 id="1-key-advertisement-packet-retained"><a class="header" href="#1-key-advertisement-packet-retained">1. Key Advertisement Packet (Retained)</a></h3>
+<p>Published to <code>pqc/keys/{client_id}</code> on startup.</p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Offset</th><th style="text-align: left">Field</th><th style="text-align: left">Type</th><th style="text-align: left">Size (Bytes)</th><th style="text-align: left">Description</th></tr></thead><tbody>
+<tr><td style="text-align: left">0</td><td style="text-align: left"><strong>Magic</strong></td><td style="text-align: left"><code>u16</code></td><td style="text-align: left">2</td><td style="text-align: left"><code>0x5051</code> ("PQ")</td></tr>
+<tr><td style="text-align: left">2</td><td style="text-align: left"><strong>Version</strong></td><td style="text-align: left"><code>u8</code></td><td style="text-align: left">1</td><td style="text-align: left"><code>0x01</code></td></tr>
+<tr><td style="text-align: left">3</td><td style="text-align: left"><strong>Kyber PK</strong></td><td style="text-align: left"><code>[u8]</code></td><td style="text-align: left">1184</td><td style="text-align: left">Kyber-768 Public Key</td></tr>
+<tr><td style="text-align: left">1187</td><td style="text-align: left"><strong>Falcon PK</strong></td><td style="text-align: left"><code>[u8]</code></td><td style="text-align: left">897</td><td style="text-align: left">Falcon-512 Public Key</td></tr>
+<tr><td style="text-align: left">2084</td><td style="text-align: left"><strong>Signature</strong></td><td style="text-align: left"><code>[u8]</code></td><td style="text-align: left">666+</td><td style="text-align: left">Falcon Signature of previous fields</td></tr>
+</tbody></table>
+</div>
+<p>Total Size: ~2750 bytes.</p>
+<h3 id="2-encrypted-data-packet"><a class="header" href="#2-encrypted-data-packet">2. Encrypted Data Packet</a></h3>
+<p>Published to application topics.</p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Offset</th><th style="text-align: left">Field</th><th style="text-align: left">Type</th><th style="text-align: left">Size (Bytes)</th><th style="text-align: left">Description</th></tr></thead><tbody>
+<tr><td style="text-align: left">0</td><td style="text-align: left"><strong>Version</strong></td><td style="text-align: left"><code>u8</code></td><td style="text-align: left">1</td><td style="text-align: left"><code>0x01</code></td></tr>
+<tr><td style="text-align: left">1</td><td style="text-align: left"><strong>Capsule Len</strong></td><td style="text-align: left"><code>u16</code> (BE)</td><td style="text-align: left">2</td><td style="text-align: left">Length of Kyber Capsule ($L_C$)</td></tr>
+<tr><td style="text-align: left">3</td><td style="text-align: left"><strong>Capsule</strong></td><td style="text-align: left"><code>[u8]</code></td><td style="text-align: left">$L_C$ (~1088)</td><td style="text-align: left">Kyber Encapsulated Secret</td></tr>
+<tr><td style="text-align: left">$3+L_C$</td><td style="text-align: left"><strong>Nonce</strong></td><td style="text-align: left"><code>[u8]</code></td><td style="text-align: left">12</td><td style="text-align: left">AES-GCM Nonce</td></tr>
+<tr><td style="text-align: left">$15+L_C$</td><td style="text-align: left"><strong>Ciphertext</strong></td><td style="text-align: left"><code>[u8]</code></td><td style="text-align: left">$L_P + 16$</td><td style="text-align: left">AES-256-GCM Encrypted Payload + Tag</td></tr>
+</tbody></table>
+</div>
+<p><strong>Decryption Flow</strong>:</p>
+<ol>
+<li>Subscriber receives packet.</li>
+<li>Extracts <strong>Capsule</strong> and uses own <strong>Kyber SK</strong> to decapsulate -&gt; <strong>Shared Secret</strong>.</li>
+<li>Derives AES-256 Key from Shared Secret.</li>
+<li>Decrypts <strong>Ciphertext</strong> using <strong>Nonce</strong> and derived Key.</li>
+<li><strong>Replay Check</strong>: Decrypted payload contains a generic header with a sequence number.</li>
+</ol>
+<h3 id="3-application-payload-inside-ciphertext"><a class="header" href="#3-application-payload-inside-ciphertext">3. Application Payload (Inside Ciphertext)</a></h3>
+<p>The plaintext inside the AES-GCM envelope has its own structure:</p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Offset</th><th style="text-align: left">Field</th><th style="text-align: left">Type</th><th style="text-align: left">Size</th><th style="text-align: left">Description</th></tr></thead><tbody>
+<tr><td style="text-align: left">0</td><td style="text-align: left"><strong>Sequence</strong></td><td style="text-align: left"><code>u64</code> (BE)</td><td style="text-align: left">8</td><td style="text-align: left">Monotonically increasing counter</td></tr>
+<tr><td style="text-align: left">8</td><td style="text-align: left"><strong>Timestamp</strong></td><td style="text-align: left"><code>u64</code> (BE)</td><td style="text-align: left">8</td><td style="text-align: left">UNIX Timestamp (ms)</td></tr>
+<tr><td style="text-align: left">16</td><td style="text-align: left"><strong>Data</strong></td><td style="text-align: left"><code>[u8]</code></td><td style="text-align: left">Var</td><td style="text-align: left">Actual application data (JSON/Binary)</td></tr>
+<tr><td style="text-align: left">End</td><td style="text-align: left"><strong>Signature</strong></td><td style="text-align: left"><code>[u8]</code></td><td style="text-align: left">Var</td><td style="text-align: left">Falcon Signature of (Seq + Time + Data)</td></tr>
+</tbody></table>
+</div>
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">

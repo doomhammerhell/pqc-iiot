@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Threat Model - PQC-IIoT Security Library</title>
+        <title>HAL Internals (Architecture) - PQC-IIoT Security Library</title>
 
 
         <!-- Custom HTML head -->
@@ -88,7 +88,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded "><a href="../index.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li class="chapter-item expanded "><a href="../architecture.html"><strong aria-hidden="true">2.</strong> Security Architecture</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/threat_model.html" class="active"><strong aria-hidden="true">2.1.</strong> Threat Model</a></li><li class="chapter-item expanded "><a href="../security/compliance.html"><strong aria-hidden="true">2.2.</strong> FIPS 140-3 Compliance</a></li></ol></li><li class="chapter-item expanded "><a href="../usage.html"><strong aria-hidden="true">3.</strong> Usage Guide</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../usage/mqtt.html"><strong aria-hidden="true">3.1.</strong> MQTT Integration</a></li><li class="chapter-item expanded "><a href="../usage/coap.html"><strong aria-hidden="true">3.2.</strong> CoAP Integration</a></li></ol></li><li class="chapter-item expanded "><a href="../hardware.html"><strong aria-hidden="true">4.</strong> Hardware Integration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../hardware/hal_internals.html"><strong aria-hidden="true">4.1.</strong> HAL Internals (Architecture)</a></li><li class="chapter-item expanded "><a href="../hardware/tpm.html"><strong aria-hidden="true">4.2.</strong> TPM 2.0</a></li><li class="chapter-item expanded "><a href="../hardware/secure_element.html"><strong aria-hidden="true">4.3.</strong> Secure Elements</a></li></ol></li><li class="chapter-item expanded "><a href="../api.html"><strong aria-hidden="true">5.</strong> API Reference</a></li><li class="chapter-item expanded "><a href="../crypto/math.html"><strong aria-hidden="true">6.</strong> Mathematical Foundations</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../crypto/proofs.html"><strong aria-hidden="true">6.1.</strong> Security Proofs & Reductions</a></li></ol></li><li class="chapter-item expanded "><a href="../security/formal_verification.html"><strong aria-hidden="true">7.</strong> Formal Security Analysis</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/fips_mapping.html"><strong aria-hidden="true">7.1.</strong> FIPS 140-3 Mapping</a></li></ol></li><li class="chapter-item expanded "><a href="../performance/benchmarks.html"><strong aria-hidden="true">8.</strong> Performance & Benchmarks</a></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded "><a href="../index.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li class="chapter-item expanded "><a href="../architecture.html"><strong aria-hidden="true">2.</strong> Security Architecture</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/threat_model.html"><strong aria-hidden="true">2.1.</strong> Threat Model</a></li><li class="chapter-item expanded "><a href="../security/compliance.html"><strong aria-hidden="true">2.2.</strong> FIPS 140-3 Compliance</a></li></ol></li><li class="chapter-item expanded "><a href="../usage.html"><strong aria-hidden="true">3.</strong> Usage Guide</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../usage/mqtt.html"><strong aria-hidden="true">3.1.</strong> MQTT Integration</a></li><li class="chapter-item expanded "><a href="../usage/coap.html"><strong aria-hidden="true">3.2.</strong> CoAP Integration</a></li></ol></li><li class="chapter-item expanded "><a href="../hardware.html"><strong aria-hidden="true">4.</strong> Hardware Integration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../hardware/hal_internals.html" class="active"><strong aria-hidden="true">4.1.</strong> HAL Internals (Architecture)</a></li><li class="chapter-item expanded "><a href="../hardware/tpm.html"><strong aria-hidden="true">4.2.</strong> TPM 2.0</a></li><li class="chapter-item expanded "><a href="../hardware/secure_element.html"><strong aria-hidden="true">4.3.</strong> Secure Elements</a></li></ol></li><li class="chapter-item expanded "><a href="../api.html"><strong aria-hidden="true">5.</strong> API Reference</a></li><li class="chapter-item expanded "><a href="../crypto/math.html"><strong aria-hidden="true">6.</strong> Mathematical Foundations</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../crypto/proofs.html"><strong aria-hidden="true">6.1.</strong> Security Proofs & Reductions</a></li></ol></li><li class="chapter-item expanded "><a href="../security/formal_verification.html"><strong aria-hidden="true">7.</strong> Formal Security Analysis</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/fips_mapping.html"><strong aria-hidden="true">7.1.</strong> FIPS 140-3 Mapping</a></li></ol></li><li class="chapter-item expanded "><a href="../performance/benchmarks.html"><strong aria-hidden="true">8.</strong> Performance & Benchmarks</a></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -150,7 +150,7 @@
                         <a href="https://github.com/doomhammerhell/pqc-iiot" title="Git repository" aria-label="Git repository">
                             <i id="git-repository-button" class="fa fa-github"></i>
                         </a>
-                        <a href="https://github.com/doomhammerhell/pqc-iiot/edit/main/docs/src/src/security/threat_model.md" title="Suggest an edit" aria-label="Suggest an edit">
+                        <a href="https://github.com/doomhammerhell/pqc-iiot/edit/main/docs/src/src/hardware/hal_internals.md" title="Suggest an edit" aria-label="Suggest an edit">
                             <i id="git-edit-button" class="fa fa-edit"></i>
                         </a>
 
@@ -179,41 +179,83 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="threat-model"><a class="header" href="#threat-model">Threat Model</a></h1>
-<p>This document outlines the threats PQC-IIoT is designed to mitigate.</p>
-<h2 id="1-store-now-decrypt-later-sndl"><a class="header" href="#1-store-now-decrypt-later-sndl">1. "Store Now, Decrypt Later" (SNDL)</a></h2>
-<p><strong>Threat</strong>: Attackers record encrypted traffic today, intending to decrypt it years later when a sufficiently powerful quantum computer becomes available.
-<strong>Mitigation</strong>: Use of Kyber (KEM) ensures that session keys cannot be retroactively recovered by quantum algorithms like Shor's algorithm.</p>
-<h2 id="2-identity-impersonation"><a class="header" href="#2-identity-impersonation">2. Identity Impersonation</a></h2>
-<p><strong>Threat</strong>: An attacker attempts to masquerade as a legitimate sensor or controller to inject false data or commands.
-<strong>Mitigation</strong>: Falcon digital signatures provide strong, quantum-resistant authentication. Strict Allow-listing of public keys prevents unauthorized devices from joining the network.</p>
-<h2 id="3-replay-attacks"><a class="header" href="#3-replay-attacks">3. Replay Attacks</a></h2>
-<p><strong>Threat</strong>: An attacker captures a valid command (e.g., "Open Valve") and re-transmits it later.
-<strong>Mitigation</strong>: Encrypted packets contain a sequential counter. The receiver tracks the <code>last_seen</code> counter for each peer and rejects duplicates or out-of-order packets.</p>
-<h2 id="4-key-extraction-from-memory"><a class="header" href="#4-key-extraction-from-memory">4. Key Extraction from Memory</a></h2>
-<p><strong>Threat</strong>: Malware or physical access allows an attacker to dump device RAM and extract private keys.
-<strong>Mitigation</strong>:</p>
+                        <h1 id="hardware-abstraction-layer-hal-internals"><a class="header" href="#hardware-abstraction-layer-hal-internals">Hardware Abstraction Layer (HAL) Internals</a></h1>
+<p>PQC-IIoT uses a trait-based Abstraction Layer to decouple cryptographic logic from the underlying execution environment. This allows the same high-level application code to run on a standard Linux gateway (using software crypto) and an embedded device with a secure element (TPM/HSM).</p>
+<h2 id="the-securityprovider-trait"><a class="header" href="#the-securityprovider-trait">The <code>SecurityProvider</code> Trait</a></h2>
+<p>The core of the HAL is the <code>SecurityProvider</code> trait, defined in <code>src/security/provider.rs</code>. It serves as the single point of truth for all sensitive operations.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub trait SecurityProvider: Send + Sync {
+    // Identity Management
+    fn public_keys(&amp;self) -&gt; &amp;PeerKeys;
+    
+    // Cryptographic Primitives
+    fn sign(&amp;self, message: &amp;[u8]) -&gt; Result&lt;Vec&lt;u8&gt;&gt;;
+    fn decrypt(&amp;self, capsule: &amp;[u8], ciphertext: &amp;[u8]) -&gt; Result&lt;Vec&lt;u8&gt;&gt;;
+    
+    // Lifecycle
+    fn zeroize(&amp;mut self);
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="design-principles"><a class="header" href="#design-principles">Design Principles</a></h3>
+<ol>
+<li><strong>Secret Key Isolation</strong>: The <code>SecurityProvider</code> implementation is the <em>only</em> component that holds private keys. High-level clients (<code>SecureMqttClient</code>) only hold a reference to the provider.</li>
+<li><strong>Thread Safety</strong>: The <code>Send + Sync</code> bounds ensure the provider can be shared safely across Tokio tasks or threads.</li>
+<li><strong>Error Propagation</strong>: All fallible operations return a <code>Result</code> type that maps hardware-specific errors (e.g., <code>TPM_E_AUTH_FAIL</code>) to the library's <code>Error</code> enum.</li>
+</ol>
+<h2 id="reference-implementation-softwaresecurityprovider"><a class="header" href="#reference-implementation-softwaresecurityprovider">Reference Implementation: <code>SoftwareSecurityProvider</code></a></h2>
+<p>The default implementation uses pure Rust crates (<code>pqcrypto</code>, <code>aes-gcm</code>) and stores keys in protected memory regions.</p>
+<h3 id="memory-layout"><a class="header" href="#memory-layout">Memory Layout</a></h3>
 <ul>
-<li><strong>Hardware</strong>: Integration with TPM 2.0 ensures keys are non-exportable and operations happen inside the secure element.</li>
-<li><strong>Software</strong>: The <code>software</code> provider uses the <code>zeroize</code> crate to wipe keys from memory immediately after use or on drop.</li>
+<li><strong>Key Storage</strong>: <code>Box&lt;dyn SecretKey&gt;</code> allows polymorphic storage of different algorithm keys (though currently concrete types are used for FFI reasons).</li>
+<li><strong>Protection</strong>: We use the <code>zeroize</code> crate. When the provider is dropped, the memory containing private keys is overwritten with zeros using volatile writes, preventing sensitive data from remaining in the heap.</li>
 </ul>
-<h2 id="5-side-channel-attacks-sca"><a class="header" href="#5-side-channel-attacks-sca">5. Side-Channel Attacks (SCA)</a></h2>
-<p><strong>Threat</strong>: Analyzing power consumption or timing to deduce private keys.
-<strong>Mitigation</strong>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Internals of SoftwareSecurityProvider
+struct SoftwareSecurityProvider {
+    kyber_sk: zeroize::Zeroizing&lt;Box&lt;[u8]&gt;&gt;, // Auto-zeroize on drop
+    falcon_sk: zeroize::Zeroizing&lt;Box&lt;[u8]&gt;&gt;,
+    // ...
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="hardware-provider-architecture-tpm-20"><a class="header" href="#hardware-provider-architecture-tpm-20">Hardware Provider Architecture (TPM 2.0)</a></h2>
+<p>When using a Hardware Security Module (HSM) or TPM:</p>
+<ol>
+<li><strong>Handles vs Keys</strong>: The provider does not store the raw private key. Instead, it stores a handle (e.g., <code>0x81000001</code> for a persistent TPM key).</li>
+<li><strong>Off-loading</strong>:
 <ul>
-<li>Underlying libraries (<code>pqcrypto-*</code>) utilize constant-time implementations where available.</li>
-<li>Hardware offloading (TPM) provides physical resistance to SCA.</li>
+<li><code>sign(msg)</code> sends the hash of the message to the TPM via TCG Software Stack (TSS).</li>
+<li>The TPM performs the signing internally using the restricted key.</li>
+<li>The signature is returned.</li>
 </ul>
+</li>
+<li><strong>No Extraction</strong>: The private key never leaves the hardware boundary.</li>
+</ol>
+<h3 id="integration-flow"><a class="header" href="#integration-flow">Integration Flow</a></h3>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant App
+    participant Provider
+    participant TPM
+    
+    App-&gt;&gt;Provider: sign(data)
+    Provider-&gt;&gt;Provider: hash(data)
+    Provider-&gt;&gt;TPM: TPM2_Sign(handle, digest)
+    TPM-&gt;&gt;TPM: Verify Authorization
+    TPM-&gt;&gt;TPM: Compute Falcon Sig
+    TPM--&gt;&gt;Provider: Signature
+    Provider--&gt;&gt;App: Signature
+</code></pre>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../architecture.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../hardware.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../security/compliance.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../hardware/tpm.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -223,11 +265,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../architecture.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../hardware.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../security/compliance.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../hardware/tpm.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>

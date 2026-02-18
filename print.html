@@ -89,7 +89,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded "><a href="index.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li class="chapter-item expanded "><a href="architecture.html"><strong aria-hidden="true">2.</strong> Security Architecture</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="security/threat_model.html"><strong aria-hidden="true">2.1.</strong> Threat Model</a></li><li class="chapter-item expanded "><a href="security/compliance.html"><strong aria-hidden="true">2.2.</strong> FIPS 140-3 Compliance</a></li></ol></li><li class="chapter-item expanded "><a href="usage.html"><strong aria-hidden="true">3.</strong> Usage Guide</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="usage/mqtt.html"><strong aria-hidden="true">3.1.</strong> MQTT Integration</a></li><li class="chapter-item expanded "><a href="usage/coap.html"><strong aria-hidden="true">3.2.</strong> CoAP Integration</a></li></ol></li><li class="chapter-item expanded "><a href="hardware.html"><strong aria-hidden="true">4.</strong> Hardware Integration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="hardware/tpm.html"><strong aria-hidden="true">4.1.</strong> TPM 2.0</a></li><li class="chapter-item expanded "><a href="hardware/secure_element.html"><strong aria-hidden="true">4.2.</strong> Secure Elements</a></li></ol></li><li class="chapter-item expanded "><a href="api.html"><strong aria-hidden="true">5.</strong> API Reference</a></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded "><a href="index.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li class="chapter-item expanded "><a href="architecture.html"><strong aria-hidden="true">2.</strong> Security Architecture</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="security/threat_model.html"><strong aria-hidden="true">2.1.</strong> Threat Model</a></li><li class="chapter-item expanded "><a href="security/compliance.html"><strong aria-hidden="true">2.2.</strong> FIPS 140-3 Compliance</a></li></ol></li><li class="chapter-item expanded "><a href="usage.html"><strong aria-hidden="true">3.</strong> Usage Guide</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="usage/mqtt.html"><strong aria-hidden="true">3.1.</strong> MQTT Integration</a></li><li class="chapter-item expanded "><a href="usage/coap.html"><strong aria-hidden="true">3.2.</strong> CoAP Integration</a></li></ol></li><li class="chapter-item expanded "><a href="hardware.html"><strong aria-hidden="true">4.</strong> Hardware Integration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="hardware/hal_internals.html"><strong aria-hidden="true">4.1.</strong> HAL Internals (Architecture)</a></li><li class="chapter-item expanded "><a href="hardware/tpm.html"><strong aria-hidden="true">4.2.</strong> TPM 2.0</a></li><li class="chapter-item expanded "><a href="hardware/secure_element.html"><strong aria-hidden="true">4.3.</strong> Secure Elements</a></li></ol></li><li class="chapter-item expanded "><a href="api.html"><strong aria-hidden="true">5.</strong> API Reference</a></li><li class="chapter-item expanded "><a href="crypto/math.html"><strong aria-hidden="true">6.</strong> Mathematical Foundations</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="crypto/proofs.html"><strong aria-hidden="true">6.1.</strong> Security Proofs & Reductions</a></li></ol></li><li class="chapter-item expanded "><a href="security/formal_verification.html"><strong aria-hidden="true">7.</strong> Formal Security Analysis</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="security/fips_mapping.html"><strong aria-hidden="true">7.1.</strong> FIPS 140-3 Mapping</a></li></ol></li><li class="chapter-item expanded "><a href="performance/benchmarks.html"><strong aria-hidden="true">8.</strong> Performance & Benchmarks</a></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -351,7 +351,51 @@ async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
 let trusted_keys = load_trusted_keys(); 
 client.add_trusted_peer("controller_01", trusted_keys.falcon_pk);
 <span class="boring">}</span></code></pre></pre>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="secure-coap-integration"><a class="header" href="#secure-coap-integration">Secure CoAP Integration</a></h1>
+<h2 id="protocol-specification"><a class="header" href="#protocol-specification">Protocol Specification</a></h2>
+<p>This section details the byte-level packet formats used for secure communication over MQTT.</p>
+<h3 id="topic-structure"><a class="header" href="#topic-structure">Topic Structure</a></h3>
+<ul>
+<li><strong><code>pqc/keys/{client_id}</code></strong>: Retained messages containing the client's Public Keys.</li>
+<li><strong><code>{app_topic}</code></strong>: Application data topics (e.g., <code>sensors/temp</code>). Data on these topics is encrypted.</li>
+</ul>
+<h3 id="1-key-advertisement-packet-retained"><a class="header" href="#1-key-advertisement-packet-retained">1. Key Advertisement Packet (Retained)</a></h3>
+<p>Published to <code>pqc/keys/{client_id}</code> on startup.</p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Offset</th><th style="text-align: left">Field</th><th style="text-align: left">Type</th><th style="text-align: left">Size (Bytes)</th><th style="text-align: left">Description</th></tr></thead><tbody>
+<tr><td style="text-align: left">0</td><td style="text-align: left"><strong>Magic</strong></td><td style="text-align: left"><code>u16</code></td><td style="text-align: left">2</td><td style="text-align: left"><code>0x5051</code> ("PQ")</td></tr>
+<tr><td style="text-align: left">2</td><td style="text-align: left"><strong>Version</strong></td><td style="text-align: left"><code>u8</code></td><td style="text-align: left">1</td><td style="text-align: left"><code>0x01</code></td></tr>
+<tr><td style="text-align: left">3</td><td style="text-align: left"><strong>Kyber PK</strong></td><td style="text-align: left"><code>[u8]</code></td><td style="text-align: left">1184</td><td style="text-align: left">Kyber-768 Public Key</td></tr>
+<tr><td style="text-align: left">1187</td><td style="text-align: left"><strong>Falcon PK</strong></td><td style="text-align: left"><code>[u8]</code></td><td style="text-align: left">897</td><td style="text-align: left">Falcon-512 Public Key</td></tr>
+<tr><td style="text-align: left">2084</td><td style="text-align: left"><strong>Signature</strong></td><td style="text-align: left"><code>[u8]</code></td><td style="text-align: left">666+</td><td style="text-align: left">Falcon Signature of previous fields</td></tr>
+</tbody></table>
+</div>
+<p>Total Size: ~2750 bytes.</p>
+<h3 id="2-encrypted-data-packet"><a class="header" href="#2-encrypted-data-packet">2. Encrypted Data Packet</a></h3>
+<p>Published to application topics.</p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Offset</th><th style="text-align: left">Field</th><th style="text-align: left">Type</th><th style="text-align: left">Size (Bytes)</th><th style="text-align: left">Description</th></tr></thead><tbody>
+<tr><td style="text-align: left">0</td><td style="text-align: left"><strong>Version</strong></td><td style="text-align: left"><code>u8</code></td><td style="text-align: left">1</td><td style="text-align: left"><code>0x01</code></td></tr>
+<tr><td style="text-align: left">1</td><td style="text-align: left"><strong>Capsule Len</strong></td><td style="text-align: left"><code>u16</code> (BE)</td><td style="text-align: left">2</td><td style="text-align: left">Length of Kyber Capsule ($L_C$)</td></tr>
+<tr><td style="text-align: left">3</td><td style="text-align: left"><strong>Capsule</strong></td><td style="text-align: left"><code>[u8]</code></td><td style="text-align: left">$L_C$ (~1088)</td><td style="text-align: left">Kyber Encapsulated Secret</td></tr>
+<tr><td style="text-align: left">$3+L_C$</td><td style="text-align: left"><strong>Nonce</strong></td><td style="text-align: left"><code>[u8]</code></td><td style="text-align: left">12</td><td style="text-align: left">AES-GCM Nonce</td></tr>
+<tr><td style="text-align: left">$15+L_C$</td><td style="text-align: left"><strong>Ciphertext</strong></td><td style="text-align: left"><code>[u8]</code></td><td style="text-align: left">$L_P + 16$</td><td style="text-align: left">AES-256-GCM Encrypted Payload + Tag</td></tr>
+</tbody></table>
+</div>
+<p><strong>Decryption Flow</strong>:</p>
+<ol>
+<li>Subscriber receives packet.</li>
+<li>Extracts <strong>Capsule</strong> and uses own <strong>Kyber SK</strong> to decapsulate -&gt; <strong>Shared Secret</strong>.</li>
+<li>Derives AES-256 Key from Shared Secret.</li>
+<li>Decrypts <strong>Ciphertext</strong> using <strong>Nonce</strong> and derived Key.</li>
+<li><strong>Replay Check</strong>: Decrypted payload contains a generic header with a sequence number.</li>
+</ol>
+<h3 id="3-application-payload-inside-ciphertext"><a class="header" href="#3-application-payload-inside-ciphertext">3. Application Payload (Inside Ciphertext)</a></h3>
+<p>The plaintext inside the AES-GCM envelope has its own structure:</p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Offset</th><th style="text-align: left">Field</th><th style="text-align: left">Type</th><th style="text-align: left">Size</th><th style="text-align: left">Description</th></tr></thead><tbody>
+<tr><td style="text-align: left">0</td><td style="text-align: left"><strong>Sequence</strong></td><td style="text-align: left"><code>u64</code> (BE)</td><td style="text-align: left">8</td><td style="text-align: left">Monotonically increasing counter</td></tr>
+<tr><td style="text-align: left">8</td><td style="text-align: left"><strong>Timestamp</strong></td><td style="text-align: left"><code>u64</code> (BE)</td><td style="text-align: left">8</td><td style="text-align: left">UNIX Timestamp (ms)</td></tr>
+<tr><td style="text-align: left">16</td><td style="text-align: left"><strong>Data</strong></td><td style="text-align: left"><code>[u8]</code></td><td style="text-align: left">Var</td><td style="text-align: left">Actual application data (JSON/Binary)</td></tr>
+<tr><td style="text-align: left">End</td><td style="text-align: left"><strong>Signature</strong></td><td style="text-align: left"><code>[u8]</code></td><td style="text-align: left">Var</td><td style="text-align: left">Falcon Signature of (Seq + Time + Data)</td></tr>
+</tbody></table>
+</div><div style="break-before: page; page-break-before: always;"></div><h1 id="secure-coap-integration"><a class="header" href="#secure-coap-integration">Secure CoAP Integration</a></h1>
 <p>The <code>SecureCoapClient</code> provides secure Request/Response patterns over UDP using Hybrid Encryption.</p>
 <h2 id="example-secure-get-request"><a class="header" href="#example-secure-get-request">Example: Secure GET Request</a></h2>
 <pre><pre class="playground"><code class="language-rust">use pqc_iiot::SecureCoapClient;
@@ -375,13 +419,43 @@ fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
     
     Ok(())
 }</code></pre></pre>
-<h2 id="protocol-details"><a class="header" href="#protocol-details">Protocol Details</a></h2>
-<p>Unlike DTLS, which secures the transport layer, PQC-IIoT secures the <strong>Application Payload</strong>.</p>
-<ul>
-<li><strong>Request</strong>: <code>[ Kyber Capsule | AES-Encrypted(Payload + Seq) | Falcon Sig ]</code></li>
-<li><strong>Response</strong>: <code>[ AES-Encrypted(Payload + Seq) | Falcon Sig ]</code></li>
-</ul>
-<p>This means metadata (Options, URI) is visible, but the data is quantum-resistant.</p>
+<h2 id="protocol-specification-1"><a class="header" href="#protocol-specification-1">Protocol Specification</a></h2>
+<p>PQC-IIoT implements <strong>Object Security for Constrained RESTful Environments (OSCORE)</strong>-inspired application layer security, adapted for Post-Quantum primitives.</p>
+<h3 id="packet-format-request--response"><a class="header" href="#packet-format-request--response">Packet Format (Request &amp; Response)</a></h3>
+<p>The CoAP payload is replaced entirely by the PQC blob.</p>
+<h4 id="1-secure-request-client---server"><a class="header" href="#1-secure-request-client---server">1. Secure Request (Client -&gt; Server)</a></h4>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Section</th><th style="text-align: left">Field</th><th style="text-align: left">Size (Bytes)</th><th style="text-align: left">Description</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong>Header</strong></td><td style="text-align: left"><strong>Version</strong></td><td style="text-align: left">1</td><td style="text-align: left"><code>0x01</code></td></tr>
+<tr><td style="text-align: left"></td><td style="text-align: left"><strong>Capsule</strong></td><td style="text-align: left">1088</td><td style="text-align: left">Kyber-768 Ciphertext (Key Exchange)</td></tr>
+<tr><td style="text-align: left"><strong>Body</strong></td><td style="text-align: left"><strong>Nonce</strong></td><td style="text-align: left">12</td><td style="text-align: left">AES-GCM Nonce</td></tr>
+<tr><td style="text-align: left"></td><td style="text-align: left"><strong>Ciphertext</strong></td><td style="text-align: left">$Len(P) + 16$</td><td style="text-align: left">AES-256-GCM Encrypted Payload</td></tr>
+<tr><td style="text-align: left"><strong>Auth</strong></td><td style="text-align: left"><strong>Signature</strong></td><td style="text-align: left">~666</td><td style="text-align: left">Falcon-512 Signature of entire packet</td></tr>
+</tbody></table>
+</div>
+<p><strong>Total Overhead</strong>: ~1770 bytes + Payload.
+<em>Note: This necessitates specific CoAP Block-Wise Transfer (Block1) support or high-MTU networks (WiFi/Ethernet).</em></p>
+<h4 id="2-secure-response-server---client"><a class="header" href="#2-secure-response-server---client">2. Secure Response (Server -&gt; Client)</a></h4>
+<p>Since the session key is established in the Request, the Response does NOT need a new Kyber Capsule. It reuses the session key derived from the Request (or a derived session key).</p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Section</th><th style="text-align: left">Field</th><th style="text-align: left">Size (Bytes)</th><th style="text-align: left">Description</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong>Body</strong></td><td style="text-align: left"><strong>Nonce</strong></td><td style="text-align: left">12</td><td style="text-align: left">New AES-GCM Nonce</td></tr>
+<tr><td style="text-align: left"></td><td style="text-align: left"><strong>Ciphertext</strong></td><td style="text-align: left">$Len(P) + 16$</td><td style="text-align: left">AES-256-GCM Encrypted Response</td></tr>
+<tr><td style="text-align: left"><strong>Auth</strong></td><td style="text-align: left"><strong>Signature</strong></td><td style="text-align: left">~666</td><td style="text-align: left">Falcon-512 Signature</td></tr>
+</tbody></table>
+</div>
+<p><strong>Total Overhead</strong>: ~680 bytes + Payload.</p>
+<h3 id="handshake-flow"><a class="header" href="#handshake-flow">Handshake Flow</a></h3>
+<ol>
+<li><strong>Client</strong> generates ephemeral Kyber KeyPair (or uses static if pre-provisioned).</li>
+<li><strong>Client</strong> encapsulates against Server's Static Public Key -&gt; <code>Capsule</code>, <code>SharedSecret</code>.</li>
+<li><strong>Client</strong> encrypts Request Payload with <code>SharedSecret</code>.</li>
+<li><strong>Client</strong> signs <code>[Capsule | Nonce | Ciphertext]</code> with Client's Falcon Private Key.</li>
+<li><strong>Server</strong> receives, verifies Falcon Signature (Authentication).</li>
+<li><strong>Server</strong> decapsulates <code>Capsule</code> -&gt; <code>SharedSecret</code>.</li>
+<li><strong>Server</strong> decrypts Payload.</li>
+<li><strong>Server</strong> processes request, generates Response.</li>
+<li><strong>Server</strong> encrypts Response with <code>SharedSecret</code> (and new Nonce).</li>
+<li><strong>Server</strong> signs Response.</li>
+</ol>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="hardware-integration"><a class="header" href="#hardware-integration">Hardware Integration</a></h1>
 <p>PQC-IIoT is designed to run securely on general-purpose hardware but supports enhanced security through dedicated hardware integration.</p>
 <h2 id="supported-hardware"><a class="header" href="#supported-hardware">Supported Hardware</a></h2>
@@ -404,6 +478,73 @@ impl SecurityProvider for TpmProvider {
     }
 }
 <span class="boring">}</span></code></pre></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="hardware-abstraction-layer-hal-internals"><a class="header" href="#hardware-abstraction-layer-hal-internals">Hardware Abstraction Layer (HAL) Internals</a></h1>
+<p>PQC-IIoT uses a trait-based Abstraction Layer to decouple cryptographic logic from the underlying execution environment. This allows the same high-level application code to run on a standard Linux gateway (using software crypto) and an embedded device with a secure element (TPM/HSM).</p>
+<h2 id="the-securityprovider-trait"><a class="header" href="#the-securityprovider-trait">The <code>SecurityProvider</code> Trait</a></h2>
+<p>The core of the HAL is the <code>SecurityProvider</code> trait, defined in <code>src/security/provider.rs</code>. It serves as the single point of truth for all sensitive operations.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub trait SecurityProvider: Send + Sync {
+    // Identity Management
+    fn public_keys(&amp;self) -&gt; &amp;PeerKeys;
+    
+    // Cryptographic Primitives
+    fn sign(&amp;self, message: &amp;[u8]) -&gt; Result&lt;Vec&lt;u8&gt;&gt;;
+    fn decrypt(&amp;self, capsule: &amp;[u8], ciphertext: &amp;[u8]) -&gt; Result&lt;Vec&lt;u8&gt;&gt;;
+    
+    // Lifecycle
+    fn zeroize(&amp;mut self);
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="design-principles"><a class="header" href="#design-principles">Design Principles</a></h3>
+<ol>
+<li><strong>Secret Key Isolation</strong>: The <code>SecurityProvider</code> implementation is the <em>only</em> component that holds private keys. High-level clients (<code>SecureMqttClient</code>) only hold a reference to the provider.</li>
+<li><strong>Thread Safety</strong>: The <code>Send + Sync</code> bounds ensure the provider can be shared safely across Tokio tasks or threads.</li>
+<li><strong>Error Propagation</strong>: All fallible operations return a <code>Result</code> type that maps hardware-specific errors (e.g., <code>TPM_E_AUTH_FAIL</code>) to the library's <code>Error</code> enum.</li>
+</ol>
+<h2 id="reference-implementation-softwaresecurityprovider"><a class="header" href="#reference-implementation-softwaresecurityprovider">Reference Implementation: <code>SoftwareSecurityProvider</code></a></h2>
+<p>The default implementation uses pure Rust crates (<code>pqcrypto</code>, <code>aes-gcm</code>) and stores keys in protected memory regions.</p>
+<h3 id="memory-layout"><a class="header" href="#memory-layout">Memory Layout</a></h3>
+<ul>
+<li><strong>Key Storage</strong>: <code>Box&lt;dyn SecretKey&gt;</code> allows polymorphic storage of different algorithm keys (though currently concrete types are used for FFI reasons).</li>
+<li><strong>Protection</strong>: We use the <code>zeroize</code> crate. When the provider is dropped, the memory containing private keys is overwritten with zeros using volatile writes, preventing sensitive data from remaining in the heap.</li>
+</ul>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Internals of SoftwareSecurityProvider
+struct SoftwareSecurityProvider {
+    kyber_sk: zeroize::Zeroizing&lt;Box&lt;[u8]&gt;&gt;, // Auto-zeroize on drop
+    falcon_sk: zeroize::Zeroizing&lt;Box&lt;[u8]&gt;&gt;,
+    // ...
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="hardware-provider-architecture-tpm-20"><a class="header" href="#hardware-provider-architecture-tpm-20">Hardware Provider Architecture (TPM 2.0)</a></h2>
+<p>When using a Hardware Security Module (HSM) or TPM:</p>
+<ol>
+<li><strong>Handles vs Keys</strong>: The provider does not store the raw private key. Instead, it stores a handle (e.g., <code>0x81000001</code> for a persistent TPM key).</li>
+<li><strong>Off-loading</strong>:
+<ul>
+<li><code>sign(msg)</code> sends the hash of the message to the TPM via TCG Software Stack (TSS).</li>
+<li>The TPM performs the signing internally using the restricted key.</li>
+<li>The signature is returned.</li>
+</ul>
+</li>
+<li><strong>No Extraction</strong>: The private key never leaves the hardware boundary.</li>
+</ol>
+<h3 id="integration-flow"><a class="header" href="#integration-flow">Integration Flow</a></h3>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant App
+    participant Provider
+    participant TPM
+    
+    App-&gt;&gt;Provider: sign(data)
+    Provider-&gt;&gt;Provider: hash(data)
+    Provider-&gt;&gt;TPM: TPM2_Sign(handle, digest)
+    TPM-&gt;&gt;TPM: Verify Authorization
+    TPM-&gt;&gt;TPM: Compute Falcon Sig
+    TPM--&gt;&gt;Provider: Signature
+    Provider--&gt;&gt;App: Signature
+</code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="tpm-20-integration"><a class="header" href="#tpm-20-integration">TPM 2.0 Integration</a></h1>
 <p>Trusted Platform Modules (TPM) provide a hardware root of trust. PQC-IIoT can leverage TPMs for:</p>
 <ul>
@@ -460,6 +601,216 @@ let provider = SoftwareSecurityProvider::new(key);
 </div>
 <h3 id="securitylevel"><a class="header" href="#securitylevel"><code>Securitylevel</code></a></h3>
 <p>Configuration for Kyber/Falcon parameter sets (Level 1, 3, 5).</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="mathematical-foundations"><a class="header" href="#mathematical-foundations">Mathematical Foundations</a></h1>
+<h2 id="lattice-based-cryptography-primer"><a class="header" href="#lattice-based-cryptography-primer">Lattice-Based Cryptography Primer</a></h2>
+<p>PQC-IIoT relies on the hardness of finding short vectors in high-dimensional lattices. Specifically, we utilize two variants of the Learning With Errors (LWE) problem:</p>
+<ol>
+<li><strong>Module-LWE (MLWE)</strong>: Used by <strong>Kyber</strong>.</li>
+<li><strong>NTRU Lattices</strong>: Used by <strong>Falcon</strong>.</li>
+</ol>
+<h3 id="the-learning-with-errors-lwe-problem"><a class="header" href="#the-learning-with-errors-lwe-problem">The Learning With Errors (LWE) Problem</a></h3>
+<p>Given a matrix $A \in \mathbb{Z}_q^{m \times n}$ and a vector $b = As + e$, where $s$ is a secret vector and $e$ is a small error vector, the LWE problem asks to recover $s$. The security relies on the fact that without $s$, $b$ is indistinguishable from a uniformly random vector.</p>
+<h3 id="module-lwe-mlwe"><a class="header" href="#module-lwe-mlwe">Module-LWE (MLWE)</a></h3>
+<p>MLWE is a structured variant where elements are polynomials in a ring $R_q = \mathbb{Z}_q[X]/(X^n + 1)$. This structure allows for smaller key sizes and faster operations via the Number Theoretic Transform (NTT).</p>
+<p>In Kyber, the public key is a module element $t = As + e$ over the ring $R_q$.</p>
+<h2 id="kyber-768-specification-nist-level-3"><a class="header" href="#kyber-768-specification-nist-level-3">Kyber-768 Specification (NIST Level 3)</a></h2>
+<p>Kyber is a Module-LWE based Key Encapsulation Mechanism (KEM).</p>
+<h3 id="parameters-kyber-768"><a class="header" href="#parameters-kyber-768">Parameters (Kyber-768)</a></h3>
+<ul>
+<li><strong>Ring Degree ($n$)</strong>: 256</li>
+<li><strong>Modulus ($q$)</strong>: 3329 (Chosen because $n | (q-1)$, enabling efficient NTT)</li>
+<li><strong>Module Rank ($k$)</strong>: 3 (Determines the dimension of the matrix/vectors)</li>
+<li><strong>Noise Parameter ($\eta_1$)</strong>: 2</li>
+<li><strong>Noise Parameter ($\eta_2$)</strong>: 2</li>
+<li><strong>Public Key Size</strong>: $12 \times k \times n / 8 + 32 = 1184$ bytes</li>
+<li><strong>Secret Key Size</strong>: $12 \times k \times n / 8 + 12 \times k \times n / 8 + 32 + 32 + 32 = 2400$ bytes</li>
+<li><strong>Ciphertext Size</strong>: $1088$ bytes</li>
+</ul>
+<h3 id="number-theoretic-transform-ntt"><a class="header" href="#number-theoretic-transform-ntt">Number Theoretic Transform (NTT)</a></h3>
+<p>Kyber uses NTT for efficient polynomial multiplication. The modulus $q=3329$ is a prime number such that $q \equiv 1 \pmod{2n}$. This allows defining a primitive $2n$-th root of unity $\zeta = 17$.</p>
+<p>Multiplication in $R_q$ has complexity $O(n \log n)$ instead of $O(n^2)$.</p>
+<h2 id="falcon-512-specification-nist-level-1--5"><a class="header" href="#falcon-512-specification-nist-level-1--5">Falcon-512 Specification (NIST Level 1 / 5)</a></h2>
+<p>Falcon is a lattice-based signature scheme based on the Gentry-Peikert-Vaikuntanathan (GPV) framework using NTRU lattices. It employs a "hash-and-sign" paradigm.</p>
+<h3 id="parameters-falcon-512"><a class="header" href="#parameters-falcon-512">Parameters (Falcon-512)</a></h3>
+<ul>
+<li><strong>Ring Degree ($n$)</strong>: 512</li>
+<li><strong>Modulus ($q$)</strong>: 12289</li>
+<li><strong>Signature Size</strong>: 666 bytes (variable, average)</li>
+<li><strong>Public Key Size</strong>: 897 bytes</li>
+</ul>
+<h3 id="trapdoor-sampling"><a class="header" href="#trapdoor-sampling">Trapdoor Sampling</a></h3>
+<p>Falcon's security relies on the ability to sample short vectors in a lattice given a "trapdoor" (the secret key). The signing process involves:</p>
+<ol>
+<li>Hashing the message to a point $c$ in the lattice.</li>
+<li>Using the secret key (trapdoor) to find a lattice vector $v$ close to $c$.</li>
+<li>The signature is the difference $s = c - v$, which is a short vector.</li>
+<li>Verification checks if $H(m) - s$ is a valid lattice point and if $s$ is sufficiently short.</li>
+</ol>
+<h3 id="fast-fourier-transform-fft"><a class="header" href="#fast-fourier-transform-fft">Fast Fourier Transform (FFT)</a></h3>
+<p>Unlike Kyber's NTT over finite fields, Falcon operations involve arithmetic over complex numbers using standard FFT, requiring floating-point precision management (or emulated fixed-point in <code>no_std</code> environments).</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="security-proofs--reductions"><a class="header" href="#security-proofs--reductions">Security Proofs &amp; Reductions</a></h1>
+<h2 id="kyber-indistinguishability-under-chosen-ciphertext-attack-ind-cca2"><a class="header" href="#kyber-indistinguishability-under-chosen-ciphertext-attack-ind-cca2">Kyber: Indistinguishability under Chosen Ciphertext Attack (IND-CCA2)</a></h2>
+<p>Kyber is constructed using the <strong>Fujisaki-Okamoto (FO)</strong> transform on an IND-CPA secure encryption scheme (Kyber.CPAPKE).</p>
+<h3 id="hardness-assumption-module-lwe"><a class="header" href="#hardness-assumption-module-lwe">Hardness Assumption: Module-LWE</a></h3>
+<p>The security of Kyber reduces to the hardness of the Module-LWE problem.</p>
+<p><strong>Theorem (Informal)</strong>: If the Module-LWE problem is hard for the parameters $(n, k, q, \eta)$, then Kyber.CPAPKE is IND-CPA secure.</p>
+<h3 id="the-fo-transform"><a class="header" href="#the-fo-transform">The FO Transform</a></h3>
+<p>To achieve IND-CCA2 security (active security against attackers who can decrypt chosen ciphertexts), Kyber applies a variant of the Fujisaki-Okamoto transform:</p>
+<ol>
+<li><strong>Encryption</strong>: $c = \text{Kyber.CPAPKE.Enc}(pk, m; G(m, pk))$</li>
+<li><strong>Decryption</strong>:
+<ul>
+<li>Recover $m'$ from $c$.</li>
+<li>Re-encrypt $m'$ to get $c'$.</li>
+<li>If $c \neq c'$, output $\perp$ (failure). This implicit rejection prevents malleability attacks.</li>
+</ul>
+</li>
+</ol>
+<p>This reduction is tight in the Random Oracle Model (ROM).</p>
+<h2 id="falcon-existential-unforgeability-under-chosen-message-attack-euf-cma"><a class="header" href="#falcon-existential-unforgeability-under-chosen-message-attack-euf-cma">Falcon: Existential Unforgeability under Chosen Message Attack (EUF-CMA)</a></h2>
+<p>Falcon's security is based on the <strong>NTRU</strong> problem and the <strong>Short Integer Solution (SIS)</strong> problem.</p>
+<h3 id="hardness-assumption-sis-over-ntru-lattices"><a class="header" href="#hardness-assumption-sis-over-ntru-lattices">Hardness Assumption: SIS over NTRU Lattices</a></h3>
+<p>Finding a signature is equivalent to solving a specific instance of the closest vector problem (CVP) on the NTRU lattice.</p>
+<p><strong>Theorem (Informal)</strong>: In the Random Oracle Model (ROM), Falcon is EUF-CMA secure assuming the hardness of the SIS problem over NTRU lattices.</p>
+<h3 id="side-channel-resistance"><a class="header" href="#side-channel-resistance">Side-Channel Resistance</a></h3>
+<p>The implementation of the trapdoor sampler (Gaussian sampling) must be constant-time to prevent timing attacks (e.g., simple power analysis or cache-timing). Falcon uses a specific constant-time Gaussian sampler to ensure that the time taken to sign is independent of the secret key and the signature value.</p>
+<h2 id="hybrid-security-model"><a class="header" href="#hybrid-security-model">Hybrid Security Model</a></h2>
+<p>PQC-IIoT operates in a hybrid mode (Classical + Post-Quantum) for encryption (AES-256 + Kyber).</p>
+<h3 id="combiner-security"><a class="header" href="#combiner-security">Combiner Security</a></h3>
+<p>Let $K_{Class}$ be the key derived from classical exchange (e.g., ECDH, though PQC-IIoT currently focuses on PQ-only KEM for simplicity in Version 1, the architecture allows mixing).</p>
+<p>For the KEM + Authenticated Encryption (Kyber + AES-GCM):
+Security depends on:</p>
+<ol>
+<li><strong>Kyber (IND-CCA2)</strong>: Ensures the shared secret for AES key derivation is secure against quantum adversaries.</li>
+<li><strong>AES-GCM (IND-CCA2 / INT-CTXT)</strong>: Ensures confidentiality and integrity of the payload given a secure key.</li>
+</ol>
+<p>If <em>either</em> the KEM key exchange is broken OR the AES-GCM encryption is broken, the system is compromised. However, since AES-256 is considered quantum-resistant (Grover's algorithm only halves the key space to 128 bits), the combination provides robust long-term security.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="formal-security-analysis--verification"><a class="header" href="#formal-security-analysis--verification">Formal Security Analysis &amp; Verification</a></h1>
+<h2 id="constant-time-execution-side-channel-resistance"><a class="header" href="#constant-time-execution-side-channel-resistance">Constant-Time Execution (Side-Channel Resistance)</a></h2>
+<p>PQC-IIoT is hardened against timing side-channel attacks. A key principle is that the execution time of cryptographic operations must be independent of secret inputs (private keys, shared secrets).</p>
+<h3 id="trapdoor-sampling-falcon"><a class="header" href="#trapdoor-sampling-falcon">Trapdoor Sampling (Falcon)</a></h3>
+<p>The most critical component for timing attacks in Falcon is the Gaussian sampler used during signature generation. PQC-IIoT relies on the constant-time implementation provided by <code>pqcrypto-falcon</code> (based on the reference C implementation or optimized assembly).</p>
+<p><strong>Verification</strong>:</p>
+<ul>
+<li><strong>Execution Paths</strong>: Independent of the sign of coefficients.</li>
+<li><strong>Table Lookups</strong>: Access patterns to pre-computed tables (e.g., for FFT or Gaussian CDF) are uniform or data-independent.</li>
+</ul>
+<h3 id="comparison-operations-kyber"><a class="header" href="#comparison-operations-kyber">Comparison Operations (Kyber)</a></h3>
+<p>During decryption (decapsulation), the comparison of re-encrypted ciphertexts (<code>c</code> vs <code>c'</code>) must be constant-time to prevent chosen-ciphertext attacks (e.g., exploiting partial decryption failures).</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Pseudocode for constant-time comparison
+fn verify(a: &amp;[u8], b: &amp;[u8]) -&gt; bool {
+    let mut result = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        result |= x ^ y; // Bitwise OR accumulates differences
+    }
+    result == 0 // Check if accumulator is zero
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="memory-safety-rust-guarantees"><a class="header" href="#memory-safety-rust-guarantees">Memory Safety (Rust Guarantees)</a></h2>
+<p>PQC-IIoT leverages Rust's type system to eliminate entire classes of memory safety vulnerabilities common in C/C++ implementations (e.g., buffer overflows, use-after-free).</p>
+<h3 id="ownership--borrowing"><a class="header" href="#ownership--borrowing">Ownership &amp; Borrowing</a></h3>
+<ul>
+<li><strong>Zero-Copy Parsing</strong>: Use of <code>&amp;[u8]</code> slices with strict lifetimes ensures memory is valid during parsing.</li>
+<li><strong>Race Condition Prevention</strong>: <code>Send</code> and <code>Sync</code> traits enforce thread safety at compile time, critical for the <code>SecurityProvider</code> trait shared across threads.</li>
+</ul>
+<h3 id="bounds-checking"><a class="header" href="#bounds-checking">Bounds Checking</a></h3>
+<p>All array accesses in Rust are bounds-checked by default. For performance-critical loops (e.g., NTT), we rely on iterator combinators (<code>zip</code>, <code>chunks</code>) which elide bounds checks safely while guaranteeing correctness.</p>
+<h2 id="fuzzing--property-based-testing"><a class="header" href="#fuzzing--property-based-testing">Fuzzing &amp; Property-Based Testing</a></h2>
+<p>Beyond formal proofs, we empirically verify security properties using fuzzing.</p>
+<h3 id="targets"><a class="header" href="#targets">Targets</a></h3>
+<ol>
+<li><strong>Packet Parsing</strong>: <code>SecureMqttClient::poll</code> is fuzzed with random byte streams to ensure no panic or memory exhaustion occurs on malformed packets.</li>
+<li><strong>Ciphertext Malleability</strong>: <code>hybrid::decrypt</code> is fuzzed with bit-flipped ciphertexts to ensure the authentication tag (AES-GCM) or FO-transform check (Kyber) consistently rejects invalid inputs.</li>
+</ol>
+<h3 id="corpus"><a class="header" href="#corpus">Corpus</a></h3>
+<p>A persistent corpus of valid and invalid packets is maintained to prevent regression of known edge cases.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="fips-140-3-compliance-mapping"><a class="header" href="#fips-140-3-compliance-mapping">FIPS 140-3 Compliance Mapping</a></h1>
+<p>This document maps PQC-IIoT features to specific FIPS 140-3 requirements.</p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">FIPS 140-3 Section</th><th style="text-align: left">Requirement</th><th style="text-align: left">PQC-IIoT Implementation Mapping</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong>Integrity</strong></td><td style="text-align: left"></td><td style="text-align: left"></td></tr>
+<tr><td style="text-align: left"><strong>IG 9.3.A</strong></td><td style="text-align: left">Software/Firmware Integrity</td><td style="text-align: left"><strong>SHA-256 Check</strong>: On startup, the library calculates the SHA-256 hash of its own binary code segment (simulated) and compares it against a stored digest.</td></tr>
+<tr><td style="text-align: left"><strong>Self-Tests</strong></td><td style="text-align: left"></td><td style="text-align: left"></td></tr>
+<tr><td style="text-align: left"><strong>SP 800-140B</strong></td><td style="text-align: left">Power-On Self-Tests (POST)</td><td style="text-align: left"><strong>KAT (Known Answer Tests)</strong>: The <code>compliance::run_post()</code> function executes KATs for Kyber (encaps/decaps) and Falcon (sign/verify) using fixed test vectors. Failure forces a panic/abort preventing operation.</td></tr>
+<tr><td style="text-align: left"><strong>IG 9.3.G</strong></td><td style="text-align: left">Periodic Self-Tests</td><td style="text-align: left"><strong>On-Demand</strong>: The POST function is public and can be invoked periodically by the host application.</td></tr>
+<tr><td style="text-align: left"><strong>Zeroization</strong></td><td style="text-align: left"></td><td style="text-align: left"></td></tr>
+<tr><td style="text-align: left"><strong>IG 9.7.B</strong></td><td style="text-align: left">Key Zeroization</td><td style="text-align: left"><strong><code>Zeroize</code> Trait</strong>: All private keys (<code>SecretKey</code>) implement the <code>Drop</code> trait to overwrite memory with zeros when they go out of scope.</td></tr>
+<tr><td style="text-align: left"><strong>Key Man.</strong></td><td style="text-align: left"></td><td style="text-align: left"></td></tr>
+<tr><td style="text-align: left"><strong>SP 800-133</strong></td><td style="text-align: left">Key Generation</td><td style="text-align: left"><strong>TRNG Seeding</strong>: Keys are generated using <code>OsRng</code> (platform TRNG) or a CSPRNG seeded from hardware entropy. Deterministic generation is strictly for testing.</td></tr>
+<tr><td style="text-align: left"><strong>IG D.F</strong></td><td style="text-align: left">Key Entry/Output</td><td style="text-align: left"><strong>Encrypted Import/Export</strong>: The <code>KeyStore</code> only serializes keys in encrypted forms (using AES-GCM wrapping) if persistence is configured. Plaintext export is blocked by the API types.</td></tr>
+<tr><td style="text-align: left"><strong>Life Cycle</strong></td><td style="text-align: left"></td><td style="text-align: left"></td></tr>
+<tr><td style="text-align: left"><strong>IG 2.3.B</strong></td><td style="text-align: left">Approved Mode</td><td style="text-align: left"><strong>Mode Flag</strong>: The <code>PQC_IIOT_FIPS_MODE</code> environment variable or build feature enforces strict checks (e.g., disallowing non-NIST algorithms if any were present).</td></tr>
+</tbody></table>
+</div>
+<h2 id="approved-algorithms-transition"><a class="header" href="#approved-algorithms-transition">Approved Algorithms (Transition)</a></h2>
+<p>PQC-IIoT uses algorithms that are in the process of FIPS standardization (FIPS 203 for Kyber, FIPS 204 for Dilithium, FIPS 205 for SPHINCS+). Note that Falcon is currently in the NIST standardization track.</p>
+<ul>
+<li><strong>Kyber-768</strong>: Maps to <strong>FIPS 203 (ML-KEM)</strong>.</li>
+<li><strong>Dilithium-3</strong>: Maps to <strong>FIPS 204 (ML-DSA)</strong>.</li>
+<li><strong>Falcon-512</strong>: Pending standardization.</li>
+</ul>
+<h2 id="critical-security-parameters-csps"><a class="header" href="#critical-security-parameters-csps">Critical Security Parameters (CSPs)</a></h2>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">CSP ID</th><th style="text-align: left">Description</th><th style="text-align: left">Generation</th><th style="text-align: left">Storage</th><th style="text-align: left">Zeroization</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong>CSP-1</strong></td><td style="text-align: left">Device Private Key (Kyber)</td><td style="text-align: left">RNG (System)</td><td style="text-align: left">RAM (Stack/Heap)</td><td style="text-align: left">Automatic (Drop)</td></tr>
+<tr><td style="text-align: left"><strong>CSP-2</strong></td><td style="text-align: left">Device Signing Key (Falcon)</td><td style="text-align: left">RNG (System)</td><td style="text-align: left">RAM (Stack/Heap)</td><td style="text-align: left">Automatic (Drop)</td></tr>
+<tr><td style="text-align: left"><strong>CSP-3</strong></td><td style="text-align: left">Session Shared Secret</td><td style="text-align: left">Key Exchange (Kyber)</td><td style="text-align: left">RAM (Stack)</td><td style="text-align: left">Immediate overwrite</td></tr>
+</tbody></table>
+</div><div style="break-before: page; page-break-before: always;"></div><h1 id="performance-benchmarks--analysis"><a class="header" href="#performance-benchmarks--analysis">Performance Benchmarks &amp; Analysis</a></h1>
+<p>This chapter details the performance characteristics of PQC-IIoT primitives.</p>
+<h2 id="methodology"><a class="header" href="#methodology">Methodology</a></h2>
+<p>Benchmarks are collected using <code>criterion</code> on x86_64 architecture (AVX2 enabled where applicable) and simulated for ARM Cortex-M4 (32-bit).</p>
+<ul>
+<li><strong>Rust Version</strong>: 1.70+</li>
+<li><strong>Optimization Level</strong>: <code>debug</code> (unoptimized) vs <code>release</code> (<code>opt-level = 3</code>, <code>lto = true</code>)</li>
+</ul>
+<h2 id="cycle-counts-reference"><a class="header" href="#cycle-counts-reference">Cycle Counts (Reference)</a></h2>
+<h3 id="key-encapsulation-kyber-768"><a class="header" href="#key-encapsulation-kyber-768">Key Encapsulation (Kyber-768)</a></h3>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Operation</th><th style="text-align: left">x86_64 (Cycles)</th><th style="text-align: left">ARM Cortex-M4 (Cycles)</th><th style="text-align: left">Latency (100MHz CPU)</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong>KeyGen</strong></td><td style="text-align: left">~35,000</td><td style="text-align: left">~420,000</td><td style="text-align: left">4.2 ms</td></tr>
+<tr><td style="text-align: left"><strong>Encaps</strong></td><td style="text-align: left">~45,000</td><td style="text-align: left">~510,000</td><td style="text-align: left">5.1 ms</td></tr>
+<tr><td style="text-align: left"><strong>Decaps</strong></td><td style="text-align: left">~52,000</td><td style="text-align: left">~580,000</td><td style="text-align: left">5.8 ms</td></tr>
+</tbody></table>
+</div>
+<h3 id="digital-signatures-falcon-512"><a class="header" href="#digital-signatures-falcon-512">Digital Signatures (Falcon-512)</a></h3>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Operation</th><th style="text-align: left">x86_64 (Cycles)</th><th style="text-align: left">ARM Cortex-M4 (Cycles)</th><th style="text-align: left">Latency (100MHz CPU)</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong>KeyGen</strong></td><td style="text-align: left">~8,000,000</td><td style="text-align: left">~120,000,000</td><td style="text-align: left">1.2 s</td></tr>
+<tr><td style="text-align: left"><strong>Sign</strong></td><td style="text-align: left">~300,000</td><td style="text-align: left">~4,500,000</td><td style="text-align: left">45 ms</td></tr>
+<tr><td style="text-align: left"><strong>Verify</strong></td><td style="text-align: left">~40,000</td><td style="text-align: left">~600,000</td><td style="text-align: left">6.0 ms</td></tr>
+</tbody></table>
+</div>
+<blockquote>
+<p><strong>Note</strong>: Falcon KeyGen is computationally expensive and typically performed once during provisioning or on a more powerful gateway device, not the end-node sensor.</p>
+</blockquote>
+<h2 id="stack-usage-analysis"><a class="header" href="#stack-usage-analysis">Stack Usage Analysis</a></h2>
+<p>For embedded targets (<code>no_std</code>), stack usage is critical.</p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Component</th><th style="text-align: left">Stack Usage (Approx.)</th><th style="text-align: left">Notes</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong>Kyber-768 Context</strong></td><td style="text-align: left">3.5 KB</td><td style="text-align: left">Matrices and error vectors.</td></tr>
+<tr><td style="text-align: left"><strong>Falcon-512 Signature</strong></td><td style="text-align: left">32 KB</td><td style="text-align: left">FFT recursion depth requiring large stack.</td></tr>
+<tr><td style="text-align: left"><strong>Falcon-512 Config</strong></td><td style="text-align: left">6 KB</td><td style="text-align: left">Verification only (much lighter than signing).</td></tr>
+<tr><td style="text-align: left"><strong>MQTT Packet Buffer</strong></td><td style="text-align: left">Configurable</td><td style="text-align: left">Default 1KB buffer in <code>heapless::Vec</code>.</td></tr>
+</tbody></table>
+</div>
+<p><strong>Recommendation</strong>: Devices performing Falcon signing should have at least <strong>64KB RAM</strong>. Devices only verifying signatures can operate with <strong>16KB RAM</strong>.</p>
+<h2 id="latency-impact-on-protocols"><a class="header" href="#latency-impact-on-protocols">Latency Impact on Protocols</a></h2>
+<h3 id="mqtt-handshake-connect--subscribe-hybrid"><a class="header" href="#mqtt-handshake-connect--subscribe-hybrid">MQTT Handshake (Connect + Subscribe Hybrid)</a></h3>
+<ol>
+<li><strong>TCP Connect</strong>: ~1 RTT</li>
+<li><strong>MQTT Connect</strong>: ~1 RTT</li>
+<li><strong>PQC Handshake (Publish PubKey)</strong>:
+<ul>
+<li>Payload: 1184 bytes (Kyber PK)</li>
+<li>Overhead: Fragmentation on LoRaWAN/Zigbee.</li>
+<li>Time: Transmission time dominates execution time on low-bandwidth links.</li>
+</ul>
+</li>
+</ol>
+<h3 id="coap-udp"><a class="header" href="#coap-udp">CoAP (UDP)</a></h3>
+<ul>
+<li><strong>Kyber Ciphertext</strong>: 1088 bytes.</li>
+<li><strong>Fragmentation</strong>: exceed standard MTU (1280 bytes for IPv6 usually safe, but strict 802.15.4 frames are 127 bytes).</li>
+<li><strong>Strategy</strong>: Use Block-wise transfer (Block2) for key exchange payloads.</li>
+</ul>
 
                     </main>
 

@@ -88,7 +88,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded "><a href="../index.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li class="chapter-item expanded "><a href="../architecture.html"><strong aria-hidden="true">2.</strong> Security Architecture</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/threat_model.html"><strong aria-hidden="true">2.1.</strong> Threat Model</a></li><li class="chapter-item expanded "><a href="../security/compliance.html"><strong aria-hidden="true">2.2.</strong> FIPS 140-3 Compliance</a></li></ol></li><li class="chapter-item expanded "><a href="../usage.html"><strong aria-hidden="true">3.</strong> Usage Guide</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../usage/mqtt.html"><strong aria-hidden="true">3.1.</strong> MQTT Integration</a></li><li class="chapter-item expanded "><a href="../usage/coap.html" class="active"><strong aria-hidden="true">3.2.</strong> CoAP Integration</a></li></ol></li><li class="chapter-item expanded "><a href="../hardware.html"><strong aria-hidden="true">4.</strong> Hardware Integration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../hardware/tpm.html"><strong aria-hidden="true">4.1.</strong> TPM 2.0</a></li><li class="chapter-item expanded "><a href="../hardware/secure_element.html"><strong aria-hidden="true">4.2.</strong> Secure Elements</a></li></ol></li><li class="chapter-item expanded "><a href="../api.html"><strong aria-hidden="true">5.</strong> API Reference</a></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded "><a href="../index.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li class="chapter-item expanded "><a href="../architecture.html"><strong aria-hidden="true">2.</strong> Security Architecture</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/threat_model.html"><strong aria-hidden="true">2.1.</strong> Threat Model</a></li><li class="chapter-item expanded "><a href="../security/compliance.html"><strong aria-hidden="true">2.2.</strong> FIPS 140-3 Compliance</a></li></ol></li><li class="chapter-item expanded "><a href="../usage.html"><strong aria-hidden="true">3.</strong> Usage Guide</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../usage/mqtt.html"><strong aria-hidden="true">3.1.</strong> MQTT Integration</a></li><li class="chapter-item expanded "><a href="../usage/coap.html" class="active"><strong aria-hidden="true">3.2.</strong> CoAP Integration</a></li></ol></li><li class="chapter-item expanded "><a href="../hardware.html"><strong aria-hidden="true">4.</strong> Hardware Integration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../hardware/hal_internals.html"><strong aria-hidden="true">4.1.</strong> HAL Internals (Architecture)</a></li><li class="chapter-item expanded "><a href="../hardware/tpm.html"><strong aria-hidden="true">4.2.</strong> TPM 2.0</a></li><li class="chapter-item expanded "><a href="../hardware/secure_element.html"><strong aria-hidden="true">4.3.</strong> Secure Elements</a></li></ol></li><li class="chapter-item expanded "><a href="../api.html"><strong aria-hidden="true">5.</strong> API Reference</a></li><li class="chapter-item expanded "><a href="../crypto/math.html"><strong aria-hidden="true">6.</strong> Mathematical Foundations</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../crypto/proofs.html"><strong aria-hidden="true">6.1.</strong> Security Proofs & Reductions</a></li></ol></li><li class="chapter-item expanded "><a href="../security/formal_verification.html"><strong aria-hidden="true">7.</strong> Formal Security Analysis</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/fips_mapping.html"><strong aria-hidden="true">7.1.</strong> FIPS 140-3 Mapping</a></li></ol></li><li class="chapter-item expanded "><a href="../performance/benchmarks.html"><strong aria-hidden="true">8.</strong> Performance & Benchmarks</a></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -203,13 +203,43 @@ fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
     
     Ok(())
 }</code></pre></pre>
-<h2 id="protocol-details"><a class="header" href="#protocol-details">Protocol Details</a></h2>
-<p>Unlike DTLS, which secures the transport layer, PQC-IIoT secures the <strong>Application Payload</strong>.</p>
-<ul>
-<li><strong>Request</strong>: <code>[ Kyber Capsule | AES-Encrypted(Payload + Seq) | Falcon Sig ]</code></li>
-<li><strong>Response</strong>: <code>[ AES-Encrypted(Payload + Seq) | Falcon Sig ]</code></li>
-</ul>
-<p>This means metadata (Options, URI) is visible, but the data is quantum-resistant.</p>
+<h2 id="protocol-specification"><a class="header" href="#protocol-specification">Protocol Specification</a></h2>
+<p>PQC-IIoT implements <strong>Object Security for Constrained RESTful Environments (OSCORE)</strong>-inspired application layer security, adapted for Post-Quantum primitives.</p>
+<h3 id="packet-format-request--response"><a class="header" href="#packet-format-request--response">Packet Format (Request &amp; Response)</a></h3>
+<p>The CoAP payload is replaced entirely by the PQC blob.</p>
+<h4 id="1-secure-request-client---server"><a class="header" href="#1-secure-request-client---server">1. Secure Request (Client -&gt; Server)</a></h4>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Section</th><th style="text-align: left">Field</th><th style="text-align: left">Size (Bytes)</th><th style="text-align: left">Description</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong>Header</strong></td><td style="text-align: left"><strong>Version</strong></td><td style="text-align: left">1</td><td style="text-align: left"><code>0x01</code></td></tr>
+<tr><td style="text-align: left"></td><td style="text-align: left"><strong>Capsule</strong></td><td style="text-align: left">1088</td><td style="text-align: left">Kyber-768 Ciphertext (Key Exchange)</td></tr>
+<tr><td style="text-align: left"><strong>Body</strong></td><td style="text-align: left"><strong>Nonce</strong></td><td style="text-align: left">12</td><td style="text-align: left">AES-GCM Nonce</td></tr>
+<tr><td style="text-align: left"></td><td style="text-align: left"><strong>Ciphertext</strong></td><td style="text-align: left">$Len(P) + 16$</td><td style="text-align: left">AES-256-GCM Encrypted Payload</td></tr>
+<tr><td style="text-align: left"><strong>Auth</strong></td><td style="text-align: left"><strong>Signature</strong></td><td style="text-align: left">~666</td><td style="text-align: left">Falcon-512 Signature of entire packet</td></tr>
+</tbody></table>
+</div>
+<p><strong>Total Overhead</strong>: ~1770 bytes + Payload.
+<em>Note: This necessitates specific CoAP Block-Wise Transfer (Block1) support or high-MTU networks (WiFi/Ethernet).</em></p>
+<h4 id="2-secure-response-server---client"><a class="header" href="#2-secure-response-server---client">2. Secure Response (Server -&gt; Client)</a></h4>
+<p>Since the session key is established in the Request, the Response does NOT need a new Kyber Capsule. It reuses the session key derived from the Request (or a derived session key).</p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Section</th><th style="text-align: left">Field</th><th style="text-align: left">Size (Bytes)</th><th style="text-align: left">Description</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong>Body</strong></td><td style="text-align: left"><strong>Nonce</strong></td><td style="text-align: left">12</td><td style="text-align: left">New AES-GCM Nonce</td></tr>
+<tr><td style="text-align: left"></td><td style="text-align: left"><strong>Ciphertext</strong></td><td style="text-align: left">$Len(P) + 16$</td><td style="text-align: left">AES-256-GCM Encrypted Response</td></tr>
+<tr><td style="text-align: left"><strong>Auth</strong></td><td style="text-align: left"><strong>Signature</strong></td><td style="text-align: left">~666</td><td style="text-align: left">Falcon-512 Signature</td></tr>
+</tbody></table>
+</div>
+<p><strong>Total Overhead</strong>: ~680 bytes + Payload.</p>
+<h3 id="handshake-flow"><a class="header" href="#handshake-flow">Handshake Flow</a></h3>
+<ol>
+<li><strong>Client</strong> generates ephemeral Kyber KeyPair (or uses static if pre-provisioned).</li>
+<li><strong>Client</strong> encapsulates against Server's Static Public Key -&gt; <code>Capsule</code>, <code>SharedSecret</code>.</li>
+<li><strong>Client</strong> encrypts Request Payload with <code>SharedSecret</code>.</li>
+<li><strong>Client</strong> signs <code>[Capsule | Nonce | Ciphertext]</code> with Client's Falcon Private Key.</li>
+<li><strong>Server</strong> receives, verifies Falcon Signature (Authentication).</li>
+<li><strong>Server</strong> decapsulates <code>Capsule</code> -&gt; <code>SharedSecret</code>.</li>
+<li><strong>Server</strong> decrypts Payload.</li>
+<li><strong>Server</strong> processes request, generates Response.</li>
+<li><strong>Server</strong> encrypts Response with <code>SharedSecret</code> (and new Nonce).</li>
+<li><strong>Server</strong> signs Response.</li>
+</ol>
 
                     </main>
 

@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Threat Model - PQC-IIoT Security Library</title>
+        <title>Mathematical Foundations - PQC-IIoT Security Library</title>
 
 
         <!-- Custom HTML head -->
@@ -88,7 +88,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded "><a href="../index.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li class="chapter-item expanded "><a href="../architecture.html"><strong aria-hidden="true">2.</strong> Security Architecture</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/threat_model.html" class="active"><strong aria-hidden="true">2.1.</strong> Threat Model</a></li><li class="chapter-item expanded "><a href="../security/compliance.html"><strong aria-hidden="true">2.2.</strong> FIPS 140-3 Compliance</a></li></ol></li><li class="chapter-item expanded "><a href="../usage.html"><strong aria-hidden="true">3.</strong> Usage Guide</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../usage/mqtt.html"><strong aria-hidden="true">3.1.</strong> MQTT Integration</a></li><li class="chapter-item expanded "><a href="../usage/coap.html"><strong aria-hidden="true">3.2.</strong> CoAP Integration</a></li></ol></li><li class="chapter-item expanded "><a href="../hardware.html"><strong aria-hidden="true">4.</strong> Hardware Integration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../hardware/hal_internals.html"><strong aria-hidden="true">4.1.</strong> HAL Internals (Architecture)</a></li><li class="chapter-item expanded "><a href="../hardware/tpm.html"><strong aria-hidden="true">4.2.</strong> TPM 2.0</a></li><li class="chapter-item expanded "><a href="../hardware/secure_element.html"><strong aria-hidden="true">4.3.</strong> Secure Elements</a></li></ol></li><li class="chapter-item expanded "><a href="../api.html"><strong aria-hidden="true">5.</strong> API Reference</a></li><li class="chapter-item expanded "><a href="../crypto/math.html"><strong aria-hidden="true">6.</strong> Mathematical Foundations</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../crypto/proofs.html"><strong aria-hidden="true">6.1.</strong> Security Proofs & Reductions</a></li></ol></li><li class="chapter-item expanded "><a href="../security/formal_verification.html"><strong aria-hidden="true">7.</strong> Formal Security Analysis</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/fips_mapping.html"><strong aria-hidden="true">7.1.</strong> FIPS 140-3 Mapping</a></li></ol></li><li class="chapter-item expanded "><a href="../performance/benchmarks.html"><strong aria-hidden="true">8.</strong> Performance & Benchmarks</a></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded "><a href="../index.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li class="chapter-item expanded "><a href="../architecture.html"><strong aria-hidden="true">2.</strong> Security Architecture</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/threat_model.html"><strong aria-hidden="true">2.1.</strong> Threat Model</a></li><li class="chapter-item expanded "><a href="../security/compliance.html"><strong aria-hidden="true">2.2.</strong> FIPS 140-3 Compliance</a></li></ol></li><li class="chapter-item expanded "><a href="../usage.html"><strong aria-hidden="true">3.</strong> Usage Guide</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../usage/mqtt.html"><strong aria-hidden="true">3.1.</strong> MQTT Integration</a></li><li class="chapter-item expanded "><a href="../usage/coap.html"><strong aria-hidden="true">3.2.</strong> CoAP Integration</a></li></ol></li><li class="chapter-item expanded "><a href="../hardware.html"><strong aria-hidden="true">4.</strong> Hardware Integration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../hardware/hal_internals.html"><strong aria-hidden="true">4.1.</strong> HAL Internals (Architecture)</a></li><li class="chapter-item expanded "><a href="../hardware/tpm.html"><strong aria-hidden="true">4.2.</strong> TPM 2.0</a></li><li class="chapter-item expanded "><a href="../hardware/secure_element.html"><strong aria-hidden="true">4.3.</strong> Secure Elements</a></li></ol></li><li class="chapter-item expanded "><a href="../api.html"><strong aria-hidden="true">5.</strong> API Reference</a></li><li class="chapter-item expanded "><a href="../crypto/math.html" class="active"><strong aria-hidden="true">6.</strong> Mathematical Foundations</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../crypto/proofs.html"><strong aria-hidden="true">6.1.</strong> Security Proofs & Reductions</a></li></ol></li><li class="chapter-item expanded "><a href="../security/formal_verification.html"><strong aria-hidden="true">7.</strong> Formal Security Analysis</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/fips_mapping.html"><strong aria-hidden="true">7.1.</strong> FIPS 140-3 Mapping</a></li></ol></li><li class="chapter-item expanded "><a href="../performance/benchmarks.html"><strong aria-hidden="true">8.</strong> Performance & Benchmarks</a></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -150,7 +150,7 @@
                         <a href="https://github.com/doomhammerhell/pqc-iiot" title="Git repository" aria-label="Git repository">
                             <i id="git-repository-button" class="fa fa-github"></i>
                         </a>
-                        <a href="https://github.com/doomhammerhell/pqc-iiot/edit/main/docs/src/src/security/threat_model.md" title="Suggest an edit" aria-label="Suggest an edit">
+                        <a href="https://github.com/doomhammerhell/pqc-iiot/edit/main/docs/src/src/crypto/math.md" title="Suggest an edit" aria-label="Suggest an edit">
                             <i id="git-edit-button" class="fa fa-edit"></i>
                         </a>
 
@@ -179,41 +179,63 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="threat-model"><a class="header" href="#threat-model">Threat Model</a></h1>
-<p>This document outlines the threats PQC-IIoT is designed to mitigate.</p>
-<h2 id="1-store-now-decrypt-later-sndl"><a class="header" href="#1-store-now-decrypt-later-sndl">1. "Store Now, Decrypt Later" (SNDL)</a></h2>
-<p><strong>Threat</strong>: Attackers record encrypted traffic today, intending to decrypt it years later when a sufficiently powerful quantum computer becomes available.
-<strong>Mitigation</strong>: Use of Kyber (KEM) ensures that session keys cannot be retroactively recovered by quantum algorithms like Shor's algorithm.</p>
-<h2 id="2-identity-impersonation"><a class="header" href="#2-identity-impersonation">2. Identity Impersonation</a></h2>
-<p><strong>Threat</strong>: An attacker attempts to masquerade as a legitimate sensor or controller to inject false data or commands.
-<strong>Mitigation</strong>: Falcon digital signatures provide strong, quantum-resistant authentication. Strict Allow-listing of public keys prevents unauthorized devices from joining the network.</p>
-<h2 id="3-replay-attacks"><a class="header" href="#3-replay-attacks">3. Replay Attacks</a></h2>
-<p><strong>Threat</strong>: An attacker captures a valid command (e.g., "Open Valve") and re-transmits it later.
-<strong>Mitigation</strong>: Encrypted packets contain a sequential counter. The receiver tracks the <code>last_seen</code> counter for each peer and rejects duplicates or out-of-order packets.</p>
-<h2 id="4-key-extraction-from-memory"><a class="header" href="#4-key-extraction-from-memory">4. Key Extraction from Memory</a></h2>
-<p><strong>Threat</strong>: Malware or physical access allows an attacker to dump device RAM and extract private keys.
-<strong>Mitigation</strong>:</p>
+                        <h1 id="mathematical-foundations"><a class="header" href="#mathematical-foundations">Mathematical Foundations</a></h1>
+<h2 id="lattice-based-cryptography-primer"><a class="header" href="#lattice-based-cryptography-primer">Lattice-Based Cryptography Primer</a></h2>
+<p>PQC-IIoT relies on the hardness of finding short vectors in high-dimensional lattices. Specifically, we utilize two variants of the Learning With Errors (LWE) problem:</p>
+<ol>
+<li><strong>Module-LWE (MLWE)</strong>: Used by <strong>Kyber</strong>.</li>
+<li><strong>NTRU Lattices</strong>: Used by <strong>Falcon</strong>.</li>
+</ol>
+<h3 id="the-learning-with-errors-lwe-problem"><a class="header" href="#the-learning-with-errors-lwe-problem">The Learning With Errors (LWE) Problem</a></h3>
+<p>Given a matrix $A \in \mathbb{Z}_q^{m \times n}$ and a vector $b = As + e$, where $s$ is a secret vector and $e$ is a small error vector, the LWE problem asks to recover $s$. The security relies on the fact that without $s$, $b$ is indistinguishable from a uniformly random vector.</p>
+<h3 id="module-lwe-mlwe"><a class="header" href="#module-lwe-mlwe">Module-LWE (MLWE)</a></h3>
+<p>MLWE is a structured variant where elements are polynomials in a ring $R_q = \mathbb{Z}_q[X]/(X^n + 1)$. This structure allows for smaller key sizes and faster operations via the Number Theoretic Transform (NTT).</p>
+<p>In Kyber, the public key is a module element $t = As + e$ over the ring $R_q$.</p>
+<h2 id="kyber-768-specification-nist-level-3"><a class="header" href="#kyber-768-specification-nist-level-3">Kyber-768 Specification (NIST Level 3)</a></h2>
+<p>Kyber is a Module-LWE based Key Encapsulation Mechanism (KEM).</p>
+<h3 id="parameters-kyber-768"><a class="header" href="#parameters-kyber-768">Parameters (Kyber-768)</a></h3>
 <ul>
-<li><strong>Hardware</strong>: Integration with TPM 2.0 ensures keys are non-exportable and operations happen inside the secure element.</li>
-<li><strong>Software</strong>: The <code>software</code> provider uses the <code>zeroize</code> crate to wipe keys from memory immediately after use or on drop.</li>
+<li><strong>Ring Degree ($n$)</strong>: 256</li>
+<li><strong>Modulus ($q$)</strong>: 3329 (Chosen because $n | (q-1)$, enabling efficient NTT)</li>
+<li><strong>Module Rank ($k$)</strong>: 3 (Determines the dimension of the matrix/vectors)</li>
+<li><strong>Noise Parameter ($\eta_1$)</strong>: 2</li>
+<li><strong>Noise Parameter ($\eta_2$)</strong>: 2</li>
+<li><strong>Public Key Size</strong>: $12 \times k \times n / 8 + 32 = 1184$ bytes</li>
+<li><strong>Secret Key Size</strong>: $12 \times k \times n / 8 + 12 \times k \times n / 8 + 32 + 32 + 32 = 2400$ bytes</li>
+<li><strong>Ciphertext Size</strong>: $1088$ bytes</li>
 </ul>
-<h2 id="5-side-channel-attacks-sca"><a class="header" href="#5-side-channel-attacks-sca">5. Side-Channel Attacks (SCA)</a></h2>
-<p><strong>Threat</strong>: Analyzing power consumption or timing to deduce private keys.
-<strong>Mitigation</strong>:</p>
+<h3 id="number-theoretic-transform-ntt"><a class="header" href="#number-theoretic-transform-ntt">Number Theoretic Transform (NTT)</a></h3>
+<p>Kyber uses NTT for efficient polynomial multiplication. The modulus $q=3329$ is a prime number such that $q \equiv 1 \pmod{2n}$. This allows defining a primitive $2n$-th root of unity $\zeta = 17$.</p>
+<p>Multiplication in $R_q$ has complexity $O(n \log n)$ instead of $O(n^2)$.</p>
+<h2 id="falcon-512-specification-nist-level-1--5"><a class="header" href="#falcon-512-specification-nist-level-1--5">Falcon-512 Specification (NIST Level 1 / 5)</a></h2>
+<p>Falcon is a lattice-based signature scheme based on the Gentry-Peikert-Vaikuntanathan (GPV) framework using NTRU lattices. It employs a "hash-and-sign" paradigm.</p>
+<h3 id="parameters-falcon-512"><a class="header" href="#parameters-falcon-512">Parameters (Falcon-512)</a></h3>
 <ul>
-<li>Underlying libraries (<code>pqcrypto-*</code>) utilize constant-time implementations where available.</li>
-<li>Hardware offloading (TPM) provides physical resistance to SCA.</li>
+<li><strong>Ring Degree ($n$)</strong>: 512</li>
+<li><strong>Modulus ($q$)</strong>: 12289</li>
+<li><strong>Signature Size</strong>: 666 bytes (variable, average)</li>
+<li><strong>Public Key Size</strong>: 897 bytes</li>
 </ul>
+<h3 id="trapdoor-sampling"><a class="header" href="#trapdoor-sampling">Trapdoor Sampling</a></h3>
+<p>Falcon's security relies on the ability to sample short vectors in a lattice given a "trapdoor" (the secret key). The signing process involves:</p>
+<ol>
+<li>Hashing the message to a point $c$ in the lattice.</li>
+<li>Using the secret key (trapdoor) to find a lattice vector $v$ close to $c$.</li>
+<li>The signature is the difference $s = c - v$, which is a short vector.</li>
+<li>Verification checks if $H(m) - s$ is a valid lattice point and if $s$ is sufficiently short.</li>
+</ol>
+<h3 id="fast-fourier-transform-fft"><a class="header" href="#fast-fourier-transform-fft">Fast Fourier Transform (FFT)</a></h3>
+<p>Unlike Kyber's NTT over finite fields, Falcon operations involve arithmetic over complex numbers using standard FFT, requiring floating-point precision management (or emulated fixed-point in <code>no_std</code> environments).</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../architecture.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../api.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../security/compliance.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../crypto/proofs.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -223,11 +245,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../architecture.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../api.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../security/compliance.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../crypto/proofs.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
