@@ -20,3 +20,7 @@
 - [Formal Security Analysis](security/formal_verification.md)
   - [FIPS 140-3 Mapping](security/fips_mapping.md)
 - [Performance & Benchmarks](performance/benchmarks.md)
+
+## Future Roadmap
+
+- [Whitepaper: PQC-Boot (Universal Loader)](roadmap/whitepaper_pqc_boot.md)
