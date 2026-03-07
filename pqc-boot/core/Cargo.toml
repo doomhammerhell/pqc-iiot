@@ -1,0 +1,30 @@
+[package]
+name = "pqc-boot-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["PQC-IIoT Team"]
+description = "Core logic for PQC-Boot Universal Loader"
+
+[dependencies]
+# spin = "0.9"           # Spinlocks for allocator
+volatile = "0.4"
+bitflags = { version = "2.4", default-features = false } # Force no_std
+# lazy_static = { version = "1.4", features = ["spin_no_std"] }
+log = { version = "0.4", default-features = false } # Ensure no_std
+
+# Crypto (Must be no_std compatible)
+# Crypto (Must be no_std compatible)
+# sha2 crate removed due to LLVM bug on UEFI target. Using local implementation.
+# Note: Falcon is tricky in no_std. For Phase 1, we will define the trait.
+# We might need to implement a fallback or custom binding later.
+
+[package.metadata.kani]
+# Kani configuration for formal verification
+
+[profile.dev]
+panic = "abort" # Simplify analysis
+
+[features]
+default = []
+uefi = []
+bios = []

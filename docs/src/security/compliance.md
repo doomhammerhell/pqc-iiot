@@ -18,10 +18,17 @@ std::env::set_var("PQC_IIOT_FIPS_MODE", "1");
 Upon initialization, the library automatically runs Known Answer Tests (KAT) for:
 - **AES-256-GCM** (Encryption/Decryption)
 - **SHA-256** (Hashing)
-- **Kyber-768** (KEM Encapsulate/Decapsulate)
+- **Kyber-1024** (KEM Encapsulate/Decapsulate)
 - **Falcon-512** (Sign/Verify)
+- **Hybrid PQH Recovery** (Kyber + X25519)
 
 If any test fails, the library panics and refuses to start, ensuring no cryptographic operations are performed with faulty logic.
+
+## Galactic Apex (V4) Assurance
+
+In addition to POST, the V4 tier introduces:
+- **Property-Based PCT**: Key generation is validated across 100+ random scenarios using Proptest before the first use.
+- **Hybrid Enforcement**: All session keys MUST be derived from both PQC and Classical ECC inputs.
 
 ## Integrity Checks
 

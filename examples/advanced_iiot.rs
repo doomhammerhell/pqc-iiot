@@ -58,7 +58,7 @@ impl IIoTDevice {
     }
 
     fn send_actuator_command(
-        &self,
+        &mut self,
         actuator_type: &str,
         command: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -80,7 +80,7 @@ impl IIoTDevice {
         }
     }
 
-    fn discover_resources(&self) -> Result<(), Box<dyn std::error::Error>> {
+    fn discover_resources(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let resources = [
             "sensors/temperature",
             "sensors/humidity",

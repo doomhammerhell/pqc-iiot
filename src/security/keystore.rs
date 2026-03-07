@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 // ... imports ...
 use std::fs::File;
-use std::io::{BufReader, BufWriter};
+use std::io::BufReader;
 
 /// Structure representing a peer's public keys and security state
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -26,6 +26,13 @@ pub struct PeerKeys {
     /// Whether this peer is trusted (Identity Verified)
     #[serde(default)] // Default to false
     pub is_trusted: bool,
+    /// Remote Attestation Quote.
+    pub quote: Option<crate::attestation::quote::AttestationQuote>,
+    /// Detached signature over the key announcement payload (Falcon).
+    /// Optional for backward compatibility; new messages must set it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(with = "base64_serde_opt")]
+    pub key_signature: Option<Vec<u8>>,
 }
 
 /// Storage for known peer keys
@@ -70,11 +77,12 @@ impl KeyStore {
     }
 
     /// Save the keystore to a file (JSON)
+    #[cfg(feature = "std")]
     pub fn save_to_file(&self, path: &str) -> crate::Result<()> {
-        let file = File::create(path).map_err(crate::Error::IoError)?;
-        let writer = BufWriter::new(file);
-        serde_json::to_writer_pretty(writer, &self)
+        let data = serde_json::to_vec_pretty(&self)
             .map_err(|e| crate::Error::ClientError(format!("Serialization error: {}", e)))?;
+        
+        crate::persistence::AtomicFileStore::write(std::path::Path::new(path), &data)?;
         Ok(())
     }
 
@@ -111,5 +119,31 @@ pub mod base64_serde {
         general_purpose::STANDARD
             .decode(base64.as_bytes())
             .map_err(serde::de::Error::custom)
+    }
+}
+
+/// Optional Base64 helper
+pub mod base64_serde_opt {
+    use alloc::vec::Vec;
+    use base64::{engine::general_purpose, Engine as _};
+    use serde::{Deserialize, Serializer, Deserializer};
+
+    pub fn serialize<S: Serializer>(v: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(bytes) => {
+                let b64 = general_purpose::STANDARD.encode(bytes);
+                serde::Serialize::serialize(&b64, s)
+            }
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<u8>>, D::Error> {
+        let opt: Option<String> = Option::deserialize(d)?;
+        Ok(opt
+            .map(|s| general_purpose::STANDARD.decode(s.as_bytes()))
+            .transpose()
+            .map_err(serde::de::Error::custom)?
+        )
     }
 }

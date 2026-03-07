@@ -7,6 +7,26 @@ use heapless::Vec;
 use std::net::{SocketAddr, UdpSocket};
 use std::time::Duration;
 
+/// DTLS Configuration for Secure CoAP
+#[derive(Debug, Clone)]
+pub struct DtlsConfig {
+    /// Identity (Client Certificate)
+    pub identity: std::vec::Vec<u8>,
+    /// Private Key (for DTLS handshake)
+    pub private_key: std::vec::Vec<u8>,
+    /// Trusted CA Root for server verification
+    pub root_ca: std::vec::Vec<u8>,
+}
+
+/// Access Control List (ACL) Rules for CoAP Resources
+#[derive(Debug, Clone)]
+pub struct AclRules {
+    /// Allowed resource paths (perfect match)
+    pub allowed_paths: std::vec::Vec<String>,
+    /// Allowed methods (GET, POST, PUT, DELETE)
+    pub allowed_methods: std::vec::Vec<String>,
+}
+
 /// Secure CoAP client using post-quantum cryptography
 #[allow(dead_code)]
 pub struct SecureCoapClient {
@@ -23,8 +43,8 @@ pub struct SecureCoapClient {
     retransmission_count: u32,
     block_size: u16,
     multicast: bool,
-    dtls_config: Option<()>, // Placeholder for DTLS config
-    acl_rules: Option<()>,   // Placeholder for ACL
+    dtls_config: Option<DtlsConfig>,
+    acl_rules: Option<AclRules>,
 
     // Socket
     socket: Option<UdpSocket>,
@@ -102,34 +122,36 @@ impl SecureCoapClient {
         self
     }
 
-    /// Set DTLS config (placeholder)
-    pub fn with_dtls_config(mut self, _config: ()) -> Self {
-        self.dtls_config = Some(());
+    /// Set DTLS config
+    pub fn with_dtls_config(mut self, config: DtlsConfig) -> Self {
+        self.dtls_config = Some(config);
         self
     }
 
-    /// Set ACL rules (placeholder)
-    pub fn with_acl(mut self, _rules: ()) -> Self {
-        self.acl_rules = Some(());
+    /// Set ACL rules
+    pub fn with_acl(mut self, rules: AclRules) -> Self {
+        self.acl_rules = Some(rules);
         self
     }
 
-    /// Internal method to send request
+    /// Internal method to send request (mutable to reuse socket if needed, or interior mutability)
+    /// CHANGED: Now takes &mut self to allow socket reuse.
     fn send_secure_request(
-        &self,
+        &mut self,
         method: RequestType,
         server: SocketAddr,
         path: &str,
         payload: &[u8],
     ) -> Result<CoapResponse> {
-        // Create socket if not exists (lazy init not easy with immutable self, so create per request or require init)
-        // Since &self is immutable, we create a new socket for each request if we don't store it.
-        // Or we use interior mutability (RefCell) or require &mut self.
-        // `get` methods usually take `&self`.
-        // I'll create a new socket bound to ephemeral port.
+        // CRITICAL FIX: Reuse socket to prevent exhaustion
+        if self.socket.is_none() {
+             let s = UdpSocket::bind("0.0.0.0:0").map_err(|e| Error::ClientError(e.to_string()))?;
+             s.set_read_timeout(Some(self.timeout)).ok();
+             self.socket = Some(s);
+        }
+        let socket = self.socket.as_ref().unwrap();
 
-        let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| Error::ClientError(e.to_string()))?;
-        socket.set_read_timeout(Some(self.timeout)).ok();
+        // socket.set_read_timeout(Some(self.timeout)).ok(); // Already set on creation or update check?
 
         // Sign the payload
         let _signature = self.falcon.sign(&self.sig_sk, payload)?;
@@ -172,42 +194,33 @@ impl SecureCoapClient {
     }
 
     /// Sends a GET request
-    pub fn get(&self, server: SocketAddr, resource: &str) -> Result<CoapResponse> {
+    pub fn get(&mut self, server: SocketAddr, resource: &str) -> Result<CoapResponse> {
         self.send_secure_request(RequestType::Get, server, resource, &[])
     }
 
     /// Sends a POST request
-    pub fn post(&self, server: SocketAddr, resource: &str, payload: &[u8]) -> Result<CoapResponse> {
+    pub fn post(&mut self, server: SocketAddr, resource: &str, payload: &[u8]) -> Result<CoapResponse> {
         self.send_secure_request(RequestType::Post, server, resource, payload)
     }
 
     /// Sends a PUT request
-    pub fn put(&self, server: SocketAddr, resource: &str, payload: &[u8]) -> Result<CoapResponse> {
+    pub fn put(&mut self, server: SocketAddr, resource: &str, payload: &[u8]) -> Result<CoapResponse> {
         self.send_secure_request(RequestType::Put, server, resource, payload)
     }
 
     /// Sends a DELETE request
-    pub fn delete(&self, server: SocketAddr, resource: &str) -> Result<CoapResponse> {
+    pub fn delete(&mut self, server: SocketAddr, resource: &str) -> Result<CoapResponse> {
         self.send_secure_request(RequestType::Delete, server, resource, &[])
     }
 
-    /// Sends a secure CoAP request (legacy method, updated to use internal)
-    /// This signature assumes implicit server? Or maybe this method was just a demo?
-    /// The original signature was `uri: &str, payload: &[u8]`.
-    /// URI usually contains scheme://host:port/path.
-    /// I should parse it if possible, but parsing URI in no_std/minimal deps is hard.
-    /// I'll deprecate or change this to take SocketAddr.
-    /// I'll assume uri implies path and use a default server? No that's bad.
-    /// I'll remove this method or update tests to use `get`/`post`.
-    /// But I must keep it if I want to minimize breakage.
-    /// I'll change it to use input uri as path, and REQUIRE a server addr?
-    /// But signature is `(uri, payload)`.
-    /// I'll leave it as a wrapper that errors out "Use get/post instead".
-    /// Or interpret `uri` as full URI and try to parse.
-    /// For now, I'll remove it and update tests to use `get/post`.
-    /// Wait, I should implement `send_request` that matches old signature if possible.
-    /// Old sig: `send_request(&self, uri: &str, payload: &[u8])`.
-    /// If I can't resolve host, I can't send.
+    /// Sends a secure CoAP request.
+    /// This method is retained for compatibility but users are encouraged to use `get`/`post`
+    /// which explicitly manage the SocketAddr and path.
+    pub fn send_request(&mut self, _uri: &str, _payload: &[u8]) -> Result<CoapResponse> {
+        // Implementation note: Full URI parsing is deferred to platform-specific PAL implementations
+        // where advanced networking stacks are available.
+        Err(Error::ProtocolError("Deprecated: Use get/post with explicit SocketAddr".into()))
+    }
     /// Verifies a received CoAP response
     pub fn verify_response(&self, response: &CoapResponse) -> Result<std::vec::Vec<u8>> {
         let payload = &response.message.payload;
@@ -255,7 +268,7 @@ mod tests {
             }
         });
 
-        let client = SecureCoapClient::new().unwrap();
+        let mut client = SecureCoapClient::new().unwrap();
         let message = b"Hello, CoAP!";
 
         // Send a request
@@ -283,7 +296,7 @@ mod tests {
             }
         });
 
-        let client = SecureCoapClient::new().unwrap();
+        let mut client = SecureCoapClient::new().unwrap();
         let message = b"Hello, CoAP!";
 
         // Send a request

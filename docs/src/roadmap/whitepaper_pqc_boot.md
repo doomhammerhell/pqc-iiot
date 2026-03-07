@@ -115,5 +115,29 @@ fn init_heap() {
 - Write the Mode Switch shim (32-bit Protected).
 - Link Rust static library to the Assembly shim.
 
-## 8. Conclusion
-PQC-Boot allows operators to extend the lifespan of legacy industrial hardware by wrapping them in a Post-Quantum security layer, bypassing the need for physical TPM upgrades. This "Software-defined Root of Trust" is essential for securing the brownfield IIoT landscape against Q-Day.
+## 9. Deep IIoT Security (Abyssal Lvl)
+
+To counter Nation-State actors, PQC-Boot implements three "Incorruptible" layers.
+
+### 9.1 Universal Remote Attestation
+Ensures the Controller knows *exactly* what code is running on the edge.
+- **Mechanism**: The bootloader hashes the Kernel and signs it with an ephemeral key derived from the boot state + a hardware secret (PUF).
+- **Quote**: `Sign_Falcon(Derived_Key, H(Kernel) || H(BIOS) || Nonce)`
+- **Benefit**: Even if an attacker steals the MQTT keys, they cannot forge a valid Attestation Quote without running the legitimate, uncompromised bootloader.
+
+### 9.2 Dual-Bank A/B with Dead Man's Switch
+Prevents "bricking" in inaccessible locations (e.g., nuclear sensors, subsea cables).
+- **Partitioning**:
+    - **Slot A**: Active Update.
+    - **Slot B**: Previous Working Version.
+    - **Golden Image**: Read-Only Factory Reset (Hardware Write-Protected).
+    - **Golden Image**: Read-Only Factory Reset (Hardware Write-Protected).
+- **Logic**: If the boot fails or the Watchdog Timer isn't reset within the policy-defined window (e.g., 300s), the "Dead Man's Switch" checks the `SecurityPolicy` max_retries. Upon exhaustion, it automatically reverts to the previous slot on the next reboot.
+
+### 9.3 Anti-Tamper Memory Protection
+Mitigates Cold Boot and Physical Probing attacks.
+- **RAM Scrambling**: Before loading the kernel, the bootloader writes pseudo-random patterns to the entire RAM to clear residual secrets.
+- **Key Masking**: Long-term keys are never stored in plaintext RAM. They are split (`Key_A ^ Key_B`) and only reconstructed in CPU registers during the Falcon signature verification.
+
+## 10. Conclusion
+PQC-Boot allows operators to extend the lifespan of legacy industrial hardware by wrapping them in a Post-Quantum security layer. With the addition of **Remote Attestation** and **Dual-Bank Redundancy**, it provides a defense-in-depth architecture suitable for the most critical infrastructure on Earth.

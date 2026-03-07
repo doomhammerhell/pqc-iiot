@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Criar cliente CoAP seguro com tratamento de erro
-    let client = match SecureCoapClient::new() {
+    let mut client = match SecureCoapClient::new() {
         Ok(client) => client,
         Err(e) => {
             eprintln!("Erro ao criar cliente CoAP: {}", e);

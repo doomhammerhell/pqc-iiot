@@ -12,6 +12,8 @@ pub enum Error {
     CryptoError(String),
     /// Network error
     NetworkError(String),
+    /// Protocol violation
+    ProtocolError(String),
     /// Error during encapsulation
     EncapsulationError(String),
     /// Error during decapsulation
@@ -58,6 +60,7 @@ impl std::fmt::Display for Error {
             Error::SignatureVerification(e) => write!(f, "Signature verification failed: {}", e),
             Error::CryptoError(e) => write!(f, "Cryptographic error: {}", e),
             Error::NetworkError(e) => write!(f, "Network error: {}", e),
+            Error::ProtocolError(e) => write!(f, "Protocol violation: {}", e),
             Error::ComplianceError(e) => write!(f, "Compliance error: {}", e),
         }
     }

@@ -1,0 +1,15 @@
+[package]
+name = "pqc-boot-mbr"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pqc-boot-core = { path = "../core" }
+rlibc = "1.0"             # Required for no_std memory ops
+
+[profile.dev]
+panic = "abort" 
+
+[profile.release]
+panic = "abort"
+lto = true

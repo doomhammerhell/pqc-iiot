@@ -30,11 +30,13 @@ pub fn start_mqtt_broker(port: u16) {
     });
 
     thread::spawn(move || {
+        println!("Broker starting on port {}", port);
         let mut broker = Broker::new(config);
         broker.start().unwrap();
+        eprintln!("BROKER THREAD EXITED UNEXPECTEDLY");
     });
     // Give it a moment to start
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(500)); // Increased from 100
 }
 
 // Simple CoAP server mock

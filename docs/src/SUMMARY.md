@@ -12,6 +12,8 @@
   - [TPM 2.0](hardware/tpm.md)
   - [Secure Elements](hardware/secure_element.md)
 - [API Reference](api.md)
+- [Developer Guide](dev_guide.md)
+  - [Industrial CI/CD Pipeline](dev_guide/ci_cd.md)
 
 ## NIST/Academic Deep Dive
 
@@ -24,3 +26,10 @@
 ## Future Roadmap
 
 - [Whitepaper: PQC-Boot (Universal Loader)](roadmap/whitepaper_pqc_boot.md)
+
+## Abyssal Security (Deep IIoT)
+
+- [Deep IIoT Scenarios](usage/deep_iiot_scenarios.md)
+- [Abyssal Threat Model (Math & Lattice)](architecture/threat_model_abyssal.md)
+- [Space-Grade Physics (TMR & Hybrid)](architecture/space_grade_physics.md)
+

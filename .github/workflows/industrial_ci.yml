@@ -1,0 +1,102 @@
+name: "Industrial PQC Pipeline"
+
+on:
+  push:
+    branches: [ "main", "release/*" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Dwarnings" 
+  # Enforce production hardening in CI
+  PQC_HW_ROOT_KEY: "0000000000000000000000000000000000000000000000000000000000000001" 
+
+jobs:
+  # 1. GATEKEEPER: Security & Compliance
+  security_gate:
+    name: "🛡️ Security & Compliance Gate"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Supply Chain Audit (cargo-audit)
+        uses: actions-rs/audit-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Static Analysis (Clippy Pedantic)
+        run: cargo clippy --all-features -- -D warnings
+        
+      - name: Formatting Check (Rustfmt)
+        run: cargo fmt -- --check
+
+  # 2. MATRIX: Testing across architectures
+  provenance_test:
+    name: "🧪 Test Matrix"
+    needs: security_gate
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # Standard Cloud/Gateway Environment
+          - target: x86_64-unknown-linux-gnu
+            cmd: cargo test --release --all-features
+            
+          # Industrial Edge (Simulated Compilation)
+          - target: thumbv7em-none-eabihf
+            cmd: cargo check --target thumbv7em-none-eabihf --no-default-features --features "embedded,kyber,falcon,coap"
+            setup_target: true
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          
+      - name: Run Verification
+        run: ${{ matrix.cmd }}
+
+  # 3. RELEASE: Production Artifact Generation
+  release_build:
+    name: "📦 Industrial Release Build"
+    needs: provenance_test
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        
+      - name: Build Release Binary (Strip Symbols)
+        run: |
+          cargo build --release
+          strip target/release/pqc-iiot
+          
+      - name: Generate SBOM (Software Bill of Materials)
+        uses: anchored-development/sbomer@v1
+        with:
+          generate-cyclonedx-json: true
+          
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            target/release/pqc-iiot
+            bom.json
+            nist_compliance_statement.md
+          body_path: release_notes_v1.0.0.md
+          draft: false
+          prerelease: false

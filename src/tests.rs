@@ -52,12 +52,12 @@ mod tests {
         let falcon = Falcon::new();
         let (public_key, secret_key) = falcon.generate_keypair().unwrap();
         let signature = falcon.sign(message, &secret_key).unwrap();
-        // Simulate a replay attack by using the same message and signature
+        // Attempt a replay attack by resubmitting the valid signature
         let is_valid = falcon.verify(message, &signature, &public_key).is_ok();
         assert!(is_valid);
-        // Simulate a timestamp check failure (e.g., by altering the message)
+        // Introduce data corruption to verify integrity check failure
         let mut altered_message = message.to_vec();
-        altered_message.push(0); // Add a byte to simulate timestamp change
+        altered_message.push(0); // Append invalid byte
         let is_invalid = falcon
             .verify(&altered_message, &signature, &public_key)
             .is_err();

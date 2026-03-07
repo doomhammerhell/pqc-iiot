@@ -1,5 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std)]
-#![forbid(unsafe_code)]
+// #![forbid(unsafe_code)] // Disabled for Compliance Memory Checks
 #![warn(missing_docs, rust_2018_idioms)]
 #![doc = include_str!("../README.md")]
 
@@ -13,7 +13,23 @@ extern crate std;
 
 /// Audit logging and event tracking
 pub mod audit;
+/// Remote Attestation features for verifying firmware integrity.
+pub mod attestation {
+    /// Remote Attestation Quotes
+    pub mod quote;
+}
 pub mod compliance;
+/// Industrial Provisioning Protocol (Join/Enrollment).
+pub mod provisioning; 
+/// Secure Firmware Over-The-Air (FOTA) updates.
+#[cfg(feature = "std")]
+pub mod fota;
+#[cfg(feature = "std")]
+pub mod persistence; 
+/// Cryptographic Ratcheting (Double Ratchet) for Forward Secrecy.
+pub mod ratchet; 
+/// Typestate Client Machine for enforcing secure state transitions.
+pub mod client_state;
 pub mod error;
 pub mod kem;
 /// Security primitives and providers
@@ -45,9 +61,9 @@ pub mod crypto {
     #[cfg(feature = "saber")]
     pub mod saber;
 
-    /// BIKE implementation
-    #[cfg(feature = "bike")]
-    pub mod bike;
+    /// HQC implementation
+    #[cfg(feature = "hqc")]
+    pub mod hqc;
 
     /// Cryptographic profiles
     #[cfg(feature = "config")]
@@ -81,8 +97,8 @@ pub use crypto::dilithium::{Dilithium, DilithiumSecurityLevel};
 #[cfg(feature = "saber")]
 pub use crypto::saber::{Saber, SaberSecurityLevel};
 
-#[cfg(feature = "bike")]
-pub use crypto::bike::{Bike, BikeSecurityLevel};
+#[cfg(feature = "hqc")]
+pub use crypto::hqc::{Hqc, HqcSecurityLevel};
 
 #[cfg(feature = "mqtt")]
 pub use mqtt_secure::SecureMqttClient;

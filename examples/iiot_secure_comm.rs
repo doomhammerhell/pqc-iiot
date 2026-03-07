@@ -21,7 +21,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let coap_client = match SecureCoapClient::new() {
+    let mut coap_client = match SecureCoapClient::new() {
         Ok(client) => client,
         Err(e) => {
             eprintln!("Erro ao criar cliente CoAP: {}", e);

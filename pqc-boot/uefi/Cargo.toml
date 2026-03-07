@@ -1,0 +1,16 @@
+[package]
+name = "pqc-boot-uefi"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+uefi = "0.24"
+uefi-services = "0.21"
+log = "0.4"
+pqc-boot-core = { path = "../core" }
+
+[build-dependencies]
+
+[[bin]]
+name = "pqc-boot-uefi"
+path = "src/main.rs"

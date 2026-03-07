@@ -1,0 +1,9 @@
+[package]
+name = "fuzz_target"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+pqc-boot-core = { path = "../pqc-boot/core" }
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }

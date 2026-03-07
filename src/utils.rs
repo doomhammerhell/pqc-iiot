@@ -22,11 +22,18 @@ pub fn fill_random<R, const N: usize>(rng: &mut R, buffer: &mut Vec<u8, N>) -> R
 where
     R: CryptoRng + RngCore,
 {
-    let mut temp = [0u8; 32];
-    rng.fill_bytes(&mut temp);
-    buffer
-        .extend_from_slice(&temp)
-        .map_err(|_| crate::Error::BufferTooSmall)
+    // Fill remaining capacity
+    let remaining = buffer.capacity() - buffer.len();
+    let mut chunk = [0u8; 32];
+    
+    let mut to_fill = remaining;
+    while to_fill > 0 {
+        let chunk_size = core::cmp::min(to_fill, chunk.len());
+        rng.fill_bytes(&mut chunk[..chunk_size]);
+        buffer.extend_from_slice(&chunk[..chunk_size]).map_err(|_| crate::Error::BufferTooSmall)?;
+        to_fill -= chunk_size;
+    }
+    Ok(())
 }
 
 /// Converts a byte slice to a fixed-size array

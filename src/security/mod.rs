@@ -4,5 +4,12 @@ pub mod hybrid;
 pub mod keystore;
 /// Abstraction for security providers (Hardware/Software)
 pub mod provider;
-/// TPM 2.0 implementation (Simulated/Stub)
+/// TPM 2.0 implementation (Software-backed for Linux/Gateway)
+#[cfg(feature = "std")]
 pub mod tpm;
+/// Denial of Service (DoS) Protection mechanisms (Client Puzzles, Rate Limiting).
+pub mod dos; 
+/// Structured and Chained Audit Logging.
+pub mod audit; 
+/// Anomaly Detection Counters and Metrics.
+pub mod metrics;

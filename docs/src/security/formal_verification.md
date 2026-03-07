@@ -36,6 +36,36 @@ PQC-IIoT leverages Rust's type system to eliminate entire classes of memory safe
 ### Bounds Checking
 All array accesses in Rust are bounds-checked by default. For performance-critical loops (e.g., NTT), we rely on iterator combinators (`zip`, `chunks`) which elide bounds checks safely while guaranteeing correctness.
 
+## Property-Based Verification (Proptest)
+
+For the **Double Ratchet** session management, we use **Property-Based Verification** to prove mathematical invariants that unit tests cannot capture. Using the `proptest` framework, we generate thousands of valid and edge-case inputs to verify:
+
+### 1. Cryptographic Correctness
+**Theorem**: For any plaintext $P$ and any shared root key $K$, $\text{Decrypt}(\text{Encrypt}(P)) \equiv P$.
+- **Verification**: 1000+ random payloads tested per run.
+
+### 2. Out-of-Order Recovery (Sliding Window)
+**Theorem**: The session MUST be able to decrypt message $N$ even if received before message $N-1$ (within the window limit).
+- **Verification**: Messages are shuffled and fed to the receiver to ensure state consistency.
+
+### 3. Replay Protection
+**Theorem**: A message $M$ decrypted at time $T$ MUST be rejected if re-submitted at $T+1$.
+- **Verification**: Attempting to re-decrypt the same ciphertext always results in an `Error::CryptoError`.
+
+## Model Checking (Kani)
+
+We use the **Kani Rust Verifier** for static analysis of critical bootloader logic. This allows us to prove the absence of panics in the MBR and Partition Manager.
+
+### 1. Partition Manager Safety
+We prove that `select_boot_partition` never panics and always returns a valid partition type, regardless of the value of `retry_count` or the state of the NAND flash model.
+
+### 2. Double Ratchet State Transitions
+In the **Galactic Apex (V4)** tier, we model the ratchet's memory usage to prove it never exceeds allocated bounds, even under adversarial sliding window attacks.
+
+## Physical Resilience (Space-Grade Physics)
+
+For proofs regarding **Single Event Upsets (SEUs)** and Radiation Hardening, see [Space-Grade Physics](../architecture/space_grade_physics.md), which details the $P_{sys} \approx 3 \cdot 10^{-18}$ probability model used in our **Triple Modular Redundancy (TMR)** implementation.
+
 ## Fuzzing & Property-Based Testing
 
 Beyond formal proofs, we empirically verify security properties using fuzzing.
