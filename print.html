@@ -89,7 +89,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded "><a href="index.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li class="chapter-item expanded "><a href="architecture.html"><strong aria-hidden="true">2.</strong> Security Architecture</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="security/threat_model.html"><strong aria-hidden="true">2.1.</strong> Threat Model</a></li><li class="chapter-item expanded "><a href="security/compliance.html"><strong aria-hidden="true">2.2.</strong> FIPS 140-3 Compliance</a></li></ol></li><li class="chapter-item expanded "><a href="usage.html"><strong aria-hidden="true">3.</strong> Usage Guide</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="usage/mqtt.html"><strong aria-hidden="true">3.1.</strong> MQTT Integration</a></li><li class="chapter-item expanded "><a href="usage/coap.html"><strong aria-hidden="true">3.2.</strong> CoAP Integration</a></li></ol></li><li class="chapter-item expanded "><a href="hardware.html"><strong aria-hidden="true">4.</strong> Hardware Integration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="hardware/hal_internals.html"><strong aria-hidden="true">4.1.</strong> HAL Internals (Architecture)</a></li><li class="chapter-item expanded "><a href="hardware/tpm.html"><strong aria-hidden="true">4.2.</strong> TPM 2.0</a></li><li class="chapter-item expanded "><a href="hardware/secure_element.html"><strong aria-hidden="true">4.3.</strong> Secure Elements</a></li></ol></li><li class="chapter-item expanded "><a href="api.html"><strong aria-hidden="true">5.</strong> API Reference</a></li><li class="chapter-item expanded "><a href="crypto/math.html"><strong aria-hidden="true">6.</strong> Mathematical Foundations</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="crypto/proofs.html"><strong aria-hidden="true">6.1.</strong> Security Proofs & Reductions</a></li></ol></li><li class="chapter-item expanded "><a href="security/formal_verification.html"><strong aria-hidden="true">7.</strong> Formal Security Analysis</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="security/fips_mapping.html"><strong aria-hidden="true">7.1.</strong> FIPS 140-3 Mapping</a></li></ol></li><li class="chapter-item expanded "><a href="performance/benchmarks.html"><strong aria-hidden="true">8.</strong> Performance & Benchmarks</a></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded "><a href="index.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li class="chapter-item expanded "><a href="architecture.html"><strong aria-hidden="true">2.</strong> Security Architecture</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="security/threat_model.html"><strong aria-hidden="true">2.1.</strong> Threat Model</a></li><li class="chapter-item expanded "><a href="security/compliance.html"><strong aria-hidden="true">2.2.</strong> FIPS 140-3 Compliance</a></li></ol></li><li class="chapter-item expanded "><a href="usage.html"><strong aria-hidden="true">3.</strong> Usage Guide</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="usage/mqtt.html"><strong aria-hidden="true">3.1.</strong> MQTT Integration</a></li><li class="chapter-item expanded "><a href="usage/coap.html"><strong aria-hidden="true">3.2.</strong> CoAP Integration</a></li></ol></li><li class="chapter-item expanded "><a href="hardware.html"><strong aria-hidden="true">4.</strong> Hardware Integration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="hardware/hal_internals.html"><strong aria-hidden="true">4.1.</strong> HAL Internals (Architecture)</a></li><li class="chapter-item expanded "><a href="hardware/tpm.html"><strong aria-hidden="true">4.2.</strong> TPM 2.0</a></li><li class="chapter-item expanded "><a href="hardware/secure_element.html"><strong aria-hidden="true">4.3.</strong> Secure Elements</a></li></ol></li><li class="chapter-item expanded "><a href="api.html"><strong aria-hidden="true">5.</strong> API Reference</a></li><li class="chapter-item expanded "><a href="dev_guide.html"><strong aria-hidden="true">6.</strong> Developer Guide</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="dev_guide/ci_cd.html"><strong aria-hidden="true">6.1.</strong> Industrial CI/CD Pipeline</a></li></ol></li><li class="chapter-item expanded "><a href="crypto/math.html"><strong aria-hidden="true">7.</strong> Mathematical Foundations</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="crypto/proofs.html"><strong aria-hidden="true">7.1.</strong> Security Proofs & Reductions</a></li></ol></li><li class="chapter-item expanded "><a href="security/formal_verification.html"><strong aria-hidden="true">8.</strong> Formal Security Analysis</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="security/fips_mapping.html"><strong aria-hidden="true">8.1.</strong> FIPS 140-3 Mapping</a></li></ol></li><li class="chapter-item expanded "><a href="performance/benchmarks.html"><strong aria-hidden="true">9.</strong> Performance & Benchmarks</a></li><li class="chapter-item expanded "><a href="roadmap/whitepaper_pqc_boot.html"><strong aria-hidden="true">10.</strong> Whitepaper: PQC-Boot (Universal Loader)</a></li><li class="chapter-item expanded "><a href="usage/deep_iiot_scenarios.html"><strong aria-hidden="true">11.</strong> Deep IIoT Scenarios</a></li><li class="chapter-item expanded "><a href="architecture/threat_model_abyssal.html"><strong aria-hidden="true">12.</strong> Abyssal Threat Model (Math & Lattice)</a></li><li class="chapter-item expanded "><a href="architecture/space_grade_physics.html"><strong aria-hidden="true">13.</strong> Space-Grade Physics (TMR & Hybrid)</a></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -278,10 +278,17 @@ std::env::set_var("PQC_IIOT_FIPS_MODE", "1");
 <ul>
 <li><strong>AES-256-GCM</strong> (Encryption/Decryption)</li>
 <li><strong>SHA-256</strong> (Hashing)</li>
-<li><strong>Kyber-768</strong> (KEM Encapsulate/Decapsulate)</li>
+<li><strong>Kyber-1024</strong> (KEM Encapsulate/Decapsulate)</li>
 <li><strong>Falcon-512</strong> (Sign/Verify)</li>
+<li><strong>Hybrid PQH Recovery</strong> (Kyber + X25519)</li>
 </ul>
 <p>If any test fails, the library panics and refuses to start, ensuring no cryptographic operations are performed with faulty logic.</p>
+<h2 id="galactic-apex-v4-assurance"><a class="header" href="#galactic-apex-v4-assurance">Galactic Apex (V4) Assurance</a></h2>
+<p>In addition to POST, the V4 tier introduces:</p>
+<ul>
+<li><strong>Property-Based PCT</strong>: Key generation is validated across 100+ random scenarios using Proptest before the first use.</li>
+<li><strong>Hybrid Enforcement</strong>: All session keys MUST be derived from both PQC and Classical ECC inputs.</li>
+</ul>
 <h2 id="integrity-checks"><a class="header" href="#integrity-checks">Integrity Checks</a></h2>
 <p>A software integrity check (using SHA-256) verifies that critical configuration and module components have not been tampered with on disk before loading.</p>
 <h2 id="conditional-self-tests"><a class="header" href="#conditional-self-tests">Conditional Self-Tests</a></h2>
@@ -601,6 +608,57 @@ let provider = SoftwareSecurityProvider::new(key);
 </div>
 <h3 id="securitylevel"><a class="header" href="#securitylevel"><code>Securitylevel</code></a></h3>
 <p>Configuration for Kyber/Falcon parameter sets (Level 1, 3, 5).</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="pqc-iiot-developer-guide"><a class="header" href="#pqc-iiot-developer-guide">PQC-IIoT Developer Guide</a></h1>
+<p>Welcome to the Developer Guide for the Post-Quantum Industrial IoT System.</p>
+<p>This section covers:</p>
+<ul>
+<li><strong><a href="dev_guide/ci_cd.html">Industrial CI/CD Pipeline</a></strong>: How our automated build system enforces security and quality gates.</li>
+<li><strong>Contributing</strong>: Guidelines for submitting code (coming soon).</li>
+<li><strong>Architecture Decisions</strong>: Why we chose specific patterns (see <a href="../architecture.html">Architecture</a>).</li>
+</ul>
+<div class="warning">
+All contributors must sign the CLA (Contributor License Agreement) and adhere to the <a href="ci_cd.html">Security Gates</a>.
+</div>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="industrial-cicd-pipeline"><a class="header" href="#industrial-cicd-pipeline">Industrial CI/CD Pipeline</a></h1>
+<div class="warning">
+This pipeline is designed for <strong>Critical Infrastructure</strong> deployments. Do not bypass security gates.
+</div>
+<h2 id="philosophy-the-assembly-line"><a class="header" href="#philosophy-the-assembly-line">Philosophy: "The Assembly Line"</a></h2>
+<p>Just as a physical manufacturing line has quality control stations, our software supply chain has strict automated gates. The <code>industrial_ci.yml</code> workflow implements a <strong>Zero Trust</strong> approach to build engineering.</p>
+<h3 id="stages"><a class="header" href="#stages">Stages</a></h3>
+<h4 id="1--security--compliance-gate"><a class="header" href="#1--security--compliance-gate">1. 🛡️ Security &amp; Compliance Gate</a></h4>
+<p>Before any code is built, it must pass the "Gatekeeper":</p>
+<ul>
+<li><strong>Supply Chain Audit</strong>: Runs <code>cargo audit</code> to check against the RustSec Advisory Database.</li>
+<li><strong>Static Analysis</strong>: Enforces <code>cargo clippy</code> with <code>-D warnings</code>. No lint warnings are allowed in production code.</li>
+<li><strong>Formatting</strong>: Enforces strict <code>rustfmt</code> rules.</li>
+</ul>
+<h4 id="2--test-matrix-cross-architecture"><a class="header" href="#2--test-matrix-cross-architecture">2. 🧪 Test Matrix (Cross-Architecture)</a></h4>
+<p>We verify correctness across different computing layers:</p>
+<ul>
+<li><strong>x86_64 (Gateway/Cloud)</strong>: Runs the full integration test suite, including simulated TPM and network latencies.</li>
+<li><strong>ARM Thumbv7em (Sensor/Embedded)</strong>: Performs a <code>cargo check</code> for the embedded target to ensure <code>no_std</code> compliance and correct feature gating.</li>
+</ul>
+<h4 id="3--industrial-release-build"><a class="header" href="#3--industrial-release-build">3. 📦 Industrial Release Build</a></h4>
+<p>Only runs on tagged releases (<code>v*</code>).</p>
+<ul>
+<li><strong>Optimization</strong>: Builds with <code>--release</code>.</li>
+<li><strong>Hardening</strong>: Strips debug symbols to reduce attack surface and binary size.</li>
+<li><strong>SBOM</strong>: Generates a <strong>Software Bill of Materials (SBOM)</strong> in CycloneDX format. This is mandatory for many regulatory standards (EO 14028).</li>
+<li><strong>Artifacts</strong>: Bundles the binary, the SBOM, and the NIST Compliance Statement into a GitHub Release.</li>
+</ul>
+<h2 id="how-to-run-locally"><a class="header" href="#how-to-run-locally">How to Run Locally</a></h2>
+<p>You can simulate the pipeline steps locally:</p>
+<pre><code class="language-bash"># 1. audit
+cargo audit
+
+# 2. test (cloud)
+cargo test --release
+
+# 3. check (embedded)
+rustup target add thumbv7em-none-eabihf
+cargo check --target thumbv7em-none-eabihf --no-default-features --features "embedded,kyber,falcon"
+</code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="mathematical-foundations"><a class="header" href="#mathematical-foundations">Mathematical Foundations</a></h1>
 <h2 id="lattice-based-cryptography-primer"><a class="header" href="#lattice-based-cryptography-primer">Lattice-Based Cryptography Primer</a></h2>
 <p>PQC-IIoT relies on the hardness of finding short vectors in high-dimensional lattices. Specifically, we utilize two variants of the Learning With Errors (LWE) problem:</p>
@@ -717,6 +775,31 @@ fn verify(a: &amp;[u8], b: &amp;[u8]) -&gt; bool {
 </ul>
 <h3 id="bounds-checking"><a class="header" href="#bounds-checking">Bounds Checking</a></h3>
 <p>All array accesses in Rust are bounds-checked by default. For performance-critical loops (e.g., NTT), we rely on iterator combinators (<code>zip</code>, <code>chunks</code>) which elide bounds checks safely while guaranteeing correctness.</p>
+<h2 id="property-based-verification-proptest"><a class="header" href="#property-based-verification-proptest">Property-Based Verification (Proptest)</a></h2>
+<p>For the <strong>Double Ratchet</strong> session management, we use <strong>Property-Based Verification</strong> to prove mathematical invariants that unit tests cannot capture. Using the <code>proptest</code> framework, we generate thousands of valid and edge-case inputs to verify:</p>
+<h3 id="1-cryptographic-correctness"><a class="header" href="#1-cryptographic-correctness">1. Cryptographic Correctness</a></h3>
+<p><strong>Theorem</strong>: For any plaintext $P$ and any shared root key $K$, $\text{Decrypt}(\text{Encrypt}(P)) \equiv P$.</p>
+<ul>
+<li><strong>Verification</strong>: 1000+ random payloads tested per run.</li>
+</ul>
+<h3 id="2-out-of-order-recovery-sliding-window"><a class="header" href="#2-out-of-order-recovery-sliding-window">2. Out-of-Order Recovery (Sliding Window)</a></h3>
+<p><strong>Theorem</strong>: The session MUST be able to decrypt message $N$ even if received before message $N-1$ (within the window limit).</p>
+<ul>
+<li><strong>Verification</strong>: Messages are shuffled and fed to the receiver to ensure state consistency.</li>
+</ul>
+<h3 id="3-replay-protection"><a class="header" href="#3-replay-protection">3. Replay Protection</a></h3>
+<p><strong>Theorem</strong>: A message $M$ decrypted at time $T$ MUST be rejected if re-submitted at $T+1$.</p>
+<ul>
+<li><strong>Verification</strong>: Attempting to re-decrypt the same ciphertext always results in an <code>Error::CryptoError</code>.</li>
+</ul>
+<h2 id="model-checking-kani"><a class="header" href="#model-checking-kani">Model Checking (Kani)</a></h2>
+<p>We use the <strong>Kani Rust Verifier</strong> for static analysis of critical bootloader logic. This allows us to prove the absence of panics in the MBR and Partition Manager.</p>
+<h3 id="1-partition-manager-safety"><a class="header" href="#1-partition-manager-safety">1. Partition Manager Safety</a></h3>
+<p>We prove that <code>select_boot_partition</code> never panics and always returns a valid partition type, regardless of the value of <code>retry_count</code> or the state of the NAND flash model.</p>
+<h3 id="2-double-ratchet-state-transitions"><a class="header" href="#2-double-ratchet-state-transitions">2. Double Ratchet State Transitions</a></h3>
+<p>In the <strong>Galactic Apex (V4)</strong> tier, we model the ratchet's memory usage to prove it never exceeds allocated bounds, even under adversarial sliding window attacks.</p>
+<h2 id="physical-resilience-space-grade-physics"><a class="header" href="#physical-resilience-space-grade-physics">Physical Resilience (Space-Grade Physics)</a></h2>
+<p>For proofs regarding <strong>Single Event Upsets (SEUs)</strong> and Radiation Hardening, see <a href="security/../architecture/space_grade_physics.html">Space-Grade Physics</a>, which details the $P_{sys} \approx 3 \cdot 10^{-18}$ probability model used in our <strong>Triple Modular Redundancy (TMR)</strong> implementation.</p>
 <h2 id="fuzzing--property-based-testing"><a class="header" href="#fuzzing--property-based-testing">Fuzzing &amp; Property-Based Testing</a></h2>
 <p>Beyond formal proofs, we empirically verify security properties using fuzzing.</p>
 <h3 id="targets"><a class="header" href="#targets">Targets</a></h3>
@@ -811,6 +894,429 @@ fn verify(a: &amp;[u8], b: &amp;[u8]) -&gt; bool {
 <li><strong>Fragmentation</strong>: exceed standard MTU (1280 bytes for IPv6 usually safe, but strict 802.15.4 frames are 127 bytes).</li>
 <li><strong>Strategy</strong>: Use Block-wise transfer (Block2) for key exchange payloads.</li>
 </ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="whitepaper-pqc-boot--a-universal-post-quantum-secure-bootloader"><a class="header" href="#whitepaper-pqc-boot--a-universal-post-quantum-secure-bootloader">Whitepaper: PQC-Boot — A Universal Post-Quantum Secure Bootloader</a></h1>
+<h2 id="abstract"><a class="header" href="#abstract">Abstract</a></h2>
+<p>This whitepaper defines the architecture for <strong>PQC-Boot</strong>, a unified secure bootloader capable of enforcing Post-Quantum Cryptographic (PQC) verification on both modern <strong>UEFI</strong> systems and legacy <strong>BIOS (MBR)</strong> industrial controllers. By implementing a <code>no_std</code> Rust core with pluggable platform frontends, PQC-Boot provides a retroactive security path for critical infrastructure that lacks native TPM or Secure Boot hardware capabilities.</p>
+<h2 id="1-problem-statement"><a class="header" href="#1-problem-statement">1. Problem Statement</a></h2>
+<p>Industrial IoT (IIoT) environments are heterogeneous. While modern gateways run 64-bit UEFI with TPM 2.0, vast amounts of critical infrastructure operate on legacy 16-bit BIOS architectures (x86) without hardware root-of-trust.</p>
+<ul>
+<li><strong>Challenge A</strong>: Legacy systems cannot verify modern signatures (RSA-4096 or ECC) due to performance and memory constraints, let alone post-quantum algorithms (Falcon-512).</li>
+<li><strong>Challenge B</strong>: The transition to PQC requires a unified chain-of-trust that works across this generational divide.</li>
+</ul>
+<h2 id="2-system-architecture"><a class="header" href="#2-system-architecture">2. System Architecture</a></h2>
+<p>PQC-Boot utilizes a split-architecture design:</p>
+<ol>
+<li><strong>Boot Core (<code>pqc-boot-core</code>)</strong>: Platform-agnostic, <code>no_std</code> Rust library containing the Falcon-512 signature verification logic, SHA-256 hashing, and Kyber-768 key encapsulation (for update decryption).</li>
+<li><strong>Platform Abstraction Layer (PAL)</strong>: Traits for Console, Disk I/O, and Memory Allocation.</li>
+<li><strong>Frontends</strong>:
+<ul>
+<li><code>pqc-boot-uefi</code>: For modern boards (PE32+ executable).</li>
+<li><code>pqc-boot-mbr</code>: For legacy boards (Stage 1 + Stage 2 raw binary).</li>
+</ul>
+</li>
+</ol>
+<h3 id="21-the-boot-core-no_std"><a class="header" href="#21-the-boot-core-no_std">2.1 The Boot Core (<code>no_std</code>)</a></h3>
+<p>The core must operate without an Operating System.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span>#![no_std]
+<span class="boring">fn main() {
+</span>extern crate alloc;
+
+pub trait Platform {
+    fn read_disk(&amp;self, lba: u64, buffer: &amp;mut [u8]) -&gt; Result&lt;(), Error&gt;;
+    fn console_log(&amp;self, msg: &amp;str);
+    fn get_random_bytes(&amp;self, buffer: &amp;mut [u8]) -&gt; Result&lt;(), Error&gt;; // RDRAND or Jitter
+}
+
+pub fn verify_kernel(platform: &amp;impl Platform, kernel_lba: u64, size: usize, signature: &amp;[u8]) -&gt; bool {
+    // 1. Load kernel into RAM (chunked)
+    // 2. Compute SHA-256 hash
+    // 3. Verify Falcon-512 Signature against embedded Root of Trust Checksum
+    pqc_falcon::verify(PUBLIC_KEY, hash, signature)
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="3-implementation-strategy-uefi-modern"><a class="header" href="#3-implementation-strategy-uefi-modern">3. Implementation Strategy: UEFI (Modern)</a></h2>
+<p>Target: <code>x86_64-unknown-uefi</code></p>
+<ol>
+<li><strong>Entry Point</strong>: Rust <code>uefi::entry</code> macro.</li>
+<li><strong>Memory</strong>: Uses UEFI Boot Services <code>allocate_pool</code>.</li>
+<li><strong>Entropy</strong>: Calls <code>EFI_RNG_PROTOCOL</code>.</li>
+<li><strong>Flow</strong>:
+<ul>
+<li>PQC-Boot loads as a standard UEFI Application (<code>/EFI/BOOT/BOOTX64.EFI</code>).</li>
+<li>It validates the Linux Kernel (<code>vmlinuz</code>) signature stored in the ESP partition.</li>
+<li>If valid, it uses <code>LoadImage</code> / <code>StartImage</code> to hand over control.</li>
+<li>If invalid, it halts or reboots into recovery.</li>
+</ul>
+</li>
+</ol>
+<h2 id="4-implementation-strategy-legacy-bios-the-abyssal-challenge"><a class="header" href="#4-implementation-strategy-legacy-bios-the-abyssal-challenge">4. Implementation Strategy: Legacy BIOS (The "Abyssal" Challenge)</a></h2>
+<p>Target: <code>x86-unknown-none</code> (Custom Linker Script)</p>
+<p>Legacy BIOS starts the CPU in <strong>Real Mode (16-bit)</strong> with only 1MB addressable RAM. Falcon-512 requires significantly more resources and 32/64-bit arithmetic.</p>
+<h3 id="41-stage-1-the-mbr-512-bytes"><a class="header" href="#41-stage-1-the-mbr-512-bytes">4.1 Stage 1: The MBR (512 bytes)</a></h3>
+<ul>
+<li><strong>Role</strong>: Minimal assembly shim.</li>
+<li><strong>Action</strong>: Copies <strong>Stage 2</strong> from sectors 1-64 of the disk into RAM address <code>0x7E00</code>.</li>
+<li><strong>Constraint</strong>: No crypto here. Just raw block copy via BIOS INT 13h.</li>
+</ul>
+<h3 id="42-stage-2-the-rust-loader-protected-mode"><a class="header" href="#42-stage-2-the-rust-loader-protected-mode">4.2 Stage 2: The Rust Loader (Protected Mode)</a></h3>
+<p>This is the heart of the legacy implementation.</p>
+<ol>
+<li><strong>Mode Switch</strong>: Immediately disable interrupts (<code>cli</code>), enable A20 line, load a Global Descriptor Table (GDT), and switch CPU to <strong>32-bit Protected Mode</strong> (or Long Mode).</li>
+<li><strong>Stack Setup</strong>: Set stack pointer to a safe high memory region (e.g., <code>0x90000</code>).</li>
+<li><strong>Driver Initialization (PIO)</strong>: Since BIOS interrupts (INT 13h) are gone in Protected Mode, Stage 2 must include a minimal <strong>PIO (Programmed I/O)</strong> driver to read the IDE/SATA disk ports directly or switch back-and-forth to Real Mode (Unreal Mode) using "thunks".</li>
+<li><strong>Verification</strong>:
+<ul>
+<li>Load the Kernel (bzImage) to <code>0x100000</code> (1MB+ mark).</li>
+<li>Run <code>pqc-boot-core</code> verification (Falcon-512).</li>
+<li><strong>Floating Point Unit (FPU)</strong>: Enable SSE/AVX registers manually (BIOS leaves them off). Falcon requires FPU.</li>
+</ul>
+</li>
+</ol>
+<h3 id="43-entropy-gap"><a class="header" href="#43-entropy-gap">4.3 Entropy Gap</a></h3>
+<p>Legacy BIOS has no TRNG.</p>
+<ul>
+<li><strong>Solution</strong>: Implement a "Jitter Entropy" collector measuring CPU execution time variance of loops against the Real Time Clock (RTC) or Programmable Interval Timer (PIT).</li>
+<li><strong>Hardening</strong>: Mix this entropy with a stored seed (updated on every successful boot) to prevent boot-time predictability attacks.</li>
+</ul>
+<h2 id="5-memory-management-the-allocator"><a class="header" href="#5-memory-management-the-allocator">5. Memory Management (The Allocator)</a></h2>
+<p>Both implementations require dynamic memory for Falcon's large signature structs (approx 4-8KB stack + heap).</p>
+<ul>
+<li><strong>Global Allocator</strong>: We implement <code>GlobalAlloc</code> using a simple "Bump Pointer" or "Linked List" allocator over a reserved RAM region (e.g., <code>0x200000</code> - <code>0x400000</code>).</li>
+</ul>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[global_allocator]
+static ALLOCATOR: LockedHeap = LockedHeap::empty();
+
+fn init_heap() {
+    let heap_start = 0x200000;
+    let heap_size = 1024 * 1024; // 1MB Heap
+    unsafe { ALLOCATOR.lock().init(heap_start, heap_size) };
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="6-root-of-trust--provisioning"><a class="header" href="#6-root-of-trust--provisioning">6. Root of Trust &amp; Provisioning</a></h2>
+<ul>
+<li><strong>Key Storage</strong>: The "Root" Falcon Public Key is compiled directly into the <code>pqc-boot</code> binary.</li>
+<li><strong>Key Rotation</strong>: To rotate the root key, the bootloader binary itself must be updated. This update process is secured by the <em>current</em> valid bootloader (Recursive Trust).</li>
+</ul>
+<h2 id="7-roadmap-to-execution"><a class="header" href="#7-roadmap-to-execution">7. Roadmap to Execution</a></h2>
+<h3 id="phase-21-prototype-uefi"><a class="header" href="#phase-21-prototype-uefi">Phase 2.1: Prototype UEFI</a></h3>
+<ul>
+<li>Build <code>pqc-boot-uefi</code> standard application.</li>
+<li>Validate Kernel signing on QEMU OVMF.</li>
+</ul>
+<h3 id="phase-22-the-core-logic"><a class="header" href="#phase-22-the-core-logic">Phase 2.2: The Core Logic</a></h3>
+<ul>
+<li>Extract <code>falcon</code> and <code>sha2</code> into a pure <code>no_std</code> crate.</li>
+<li>Implement <code>GlobalAlloc</code> shim.</li>
+</ul>
+<h3 id="phase-23-legacy-assembly"><a class="header" href="#phase-23-legacy-assembly">Phase 2.3: Legacy Assembly</a></h3>
+<ul>
+<li>Write the MBR shim (NASM).</li>
+<li>Write the Mode Switch shim (32-bit Protected).</li>
+<li>Link Rust static library to the Assembly shim.</li>
+</ul>
+<h2 id="9-deep-iiot-security-abyssal-lvl"><a class="header" href="#9-deep-iiot-security-abyssal-lvl">9. Deep IIoT Security (Abyssal Lvl)</a></h2>
+<p>To counter Nation-State actors, PQC-Boot implements three "Incorruptible" layers.</p>
+<h3 id="91-universal-remote-attestation"><a class="header" href="#91-universal-remote-attestation">9.1 Universal Remote Attestation</a></h3>
+<p>Ensures the Controller knows <em>exactly</em> what code is running on the edge.</p>
+<ul>
+<li><strong>Mechanism</strong>: The bootloader hashes the Kernel and signs it with an ephemeral key derived from the boot state + a hardware secret (PUF).</li>
+<li><strong>Quote</strong>: <code>Sign_Falcon(Derived_Key, H(Kernel) || H(BIOS) || Nonce)</code></li>
+<li><strong>Benefit</strong>: Even if an attacker steals the MQTT keys, they cannot forge a valid Attestation Quote without running the legitimate, uncompromised bootloader.</li>
+</ul>
+<h3 id="92-dual-bank-ab-with-dead-mans-switch"><a class="header" href="#92-dual-bank-ab-with-dead-mans-switch">9.2 Dual-Bank A/B with Dead Man's Switch</a></h3>
+<p>Prevents "bricking" in inaccessible locations (e.g., nuclear sensors, subsea cables).</p>
+<ul>
+<li><strong>Partitioning</strong>:
+<ul>
+<li><strong>Slot A</strong>: Active Update.</li>
+<li><strong>Slot B</strong>: Previous Working Version.</li>
+<li><strong>Golden Image</strong>: Read-Only Factory Reset (Hardware Write-Protected).</li>
+<li><strong>Golden Image</strong>: Read-Only Factory Reset (Hardware Write-Protected).</li>
+</ul>
+</li>
+<li><strong>Logic</strong>: If the boot fails or the Watchdog Timer isn't reset within the policy-defined window (e.g., 300s), the "Dead Man's Switch" checks the <code>SecurityPolicy</code> max_retries. Upon exhaustion, it automatically reverts to the previous slot on the next reboot.</li>
+</ul>
+<h3 id="93-anti-tamper-memory-protection"><a class="header" href="#93-anti-tamper-memory-protection">9.3 Anti-Tamper Memory Protection</a></h3>
+<p>Mitigates Cold Boot and Physical Probing attacks.</p>
+<ul>
+<li><strong>RAM Scrambling</strong>: Before loading the kernel, the bootloader writes pseudo-random patterns to the entire RAM to clear residual secrets.</li>
+<li><strong>Key Masking</strong>: Long-term keys are never stored in plaintext RAM. They are split (<code>Key_A ^ Key_B</code>) and only reconstructed in CPU registers during the Falcon signature verification.</li>
+</ul>
+<h2 id="10-conclusion"><a class="header" href="#10-conclusion">10. Conclusion</a></h2>
+<p>PQC-Boot allows operators to extend the lifespan of legacy industrial hardware by wrapping them in a Post-Quantum security layer. With the addition of <strong>Remote Attestation</strong> and <strong>Dual-Bank Redundancy</strong>, it provides a defense-in-depth architecture suitable for the most critical infrastructure on Earth.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="deep-iiot-scenarios-use-cases-for-abyssal-security"><a class="header" href="#deep-iiot-scenarios-use-cases-for-abyssal-security">Deep IIoT Scenarios: Use Cases for "Abyssal" Security</a></h1>
+<p>This document outlines deployment scenarios for <strong>PQC-Boot</strong> in critical infrastructure, where failure or compromise leads to catastrophic physical consequences.</p>
+<h2 id="case-study-1-the-nuclear-reactor-failsafe-controller"><a class="header" href="#case-study-1-the-nuclear-reactor-failsafe-controller">Case Study 1: The Nuclear Reactor Failsafe Controller</a></h2>
+<p><strong>Environment</strong>: Primary Cooling Loop Control Unit (PLCU).
+<strong>Threat Model</strong>: Nation-State actor attempting to inject malicious firmware to disable cooling pumps (Stuxnet-style).
+<strong>Constraint</strong>: System is air-gapped but updates are delivered via technicians with toughbooks (potential vector). Physical access is restricted but not impossible for insiders.</p>
+<h3 id="the-dead-mans-switch-configuration"><a class="header" href="#the-dead-mans-switch-configuration">The "Dead Man's Switch" Configuration</a></h3>
+<p>To prevent a bad update (or a malicious one that wipes the system) from causing a meltdown, the controller uses the <strong>Dual-Bank A/B with Dead Man's Switch</strong>.</p>
+<h4 id="configuration-srclibrs-snippet"><a class="header" href="#configuration-srclibrs-snippet">Configuration (<code>src/lib.rs</code> snippet)</a></h4>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// HARDWARE_CONFIG: PLCU_V2 (Policy-Driven)
+pub struct SecurityPolicy {
+    pub max_retries: u8,
+    pub watchdog_timeout_ms: u32,
+}
+
+// this would be burnt into eFuses or signed config partition
+pub const POLICY: SecurityPolicy = SecurityPolicy {
+    max_retries: 3,              // Configurable resilience
+    watchdog_timeout_ms: 300_000 // 5 minutes
+};
+
+pub const PARTITION_LAYOUT: PartitionTable = PartitionTable {
+    slot_a: Partition { start_lba: 2048, size: 32768, active: true, retry_count: 0 },
+    slot_b: Partition { start_lba: 34816, size: 32768, active: false, retry_count: 0 },
+    golden: Partition { start_lba: 67584, size: 8192, active: true, retry_count: 0 },
+};
+<span class="boring">}</span></code></pre></pre>
+<h4 id="the-logic-flow"><a class="header" href="#the-logic-flow">The Logic Flow</a></h4>
+<ol>
+<li><strong>Update</strong>: Technician uploads standard signed firmware to <code>Slot A</code>.</li>
+<li><strong>Boot</strong>: PQC-Boot verifies Falcon-512 signature. <strong>Result: Valid</strong>.</li>
+<li><strong>Execution</strong>: Kernel loads, but contains a subtle logic bomb that hangs the cooling control loop.</li>
+<li><strong>Reaction</strong>:
+<ul>
+<li>The OS Watchdog driver fails to "pet" the hardware watchdog because the thread is hung.</li>
+<li><strong>T+300s</strong>: Hardware Watchdog resets the CPU.</li>
+<li><strong>Reboot 1</strong>: PQC-Boot sees <code>nvram_counter == 1</code>. Trie Slot A again.</li>
+<li>...</li>
+<li><strong>Reboot 3</strong>: PQC-Boot sees <code>nvram_counter &gt;= POLICY.max_retries</code> (3).</li>
+<li><strong>Action</strong>: <code>PartitionManager</code> swaps Active Slot to <code>Slot B</code> (Previous Known Good).</li>
+<li><strong>Result</strong>: Reactor cooling control is restored automatically.</li>
+</ul>
+</li>
+</ol>
+<p><strong>Abyssal Feature</strong>: The <code>Golden Image</code> provides a tertiary fallback that is physically write-protected (GPIO pin grounded), meaning no software can overwrite it.</p>
+<hr />
+<h2 id="case-study-2-the-subsea-cable-repeater-anti-tamper"><a class="header" href="#case-study-2-the-subsea-cable-repeater-anti-tamper">Case Study 2: The Subsea Cable Repeater (Anti-Tamper)</a></h2>
+<p><strong>Environment</strong>: Optical Amplifier located 4,000m deep.
+<strong>Threat Model</strong>: Sophisticated adversary retrieving the physical device (via submarine) to extract private keys for Man-in-the-Middle traffic decryption.
+<strong>Constraint</strong>: Physical access is possible by the adversary. Cold Boot attacks are feasible if the device is brought to the surface quickly.</p>
+<h3 id="memory-obfuscation--key-masking"><a class="header" href="#memory-obfuscation--key-masking">Memory Obfuscation &amp; Key Masking</a></h3>
+<p>To prevent key extraction from RAM, PQC-Boot employs <strong>Anti-Tamper Memory Protection</strong>.</p>
+<h4 id="memory-scrambling-srclibrs-logic"><a class="header" href="#memory-scrambling-srclibrs-logic">Memory Scrambling (<code>src/lib.rs</code> logic)</a></h4>
+<p>Before any sensitive material is loaded, the RAM is actively erased with high-entropy patterns.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// BootVerifier::verify_boot_flow
+pub fn verify_boot_flow(...) {
+    // 1. Anti-Tamper: Scramble RAM
+    // Writes pseudo-random noise to 100% of available DRAM
+    // prevents "data burn-in" or remnance from previous sessions.
+    MemoryProtector::scramble_ram(DRAM_START, DRAM_SIZE);
+    
+    // ... Load Kernel ...
+}
+<span class="boring">}</span></code></pre></pre>
+<h4 id="key-masking-split-key-storage"><a class="header" href="#key-masking-split-key-storage">Key Masking (Split-Key Storage)</a></h4>
+<p>The Device Identity Key (Falcon Private Key) is NOT stored in plain text in the SPI Flash or RAM.</p>
+<p>$$ K_{real} = K_{partA} \oplus K_{partB} $$</p>
+<ul>
+<li><strong>Part A</strong>: Stored in SPI Flash (Encrypted).</li>
+<li><strong>Part B</strong>: Derived from Physical Unclonable Function (PUF) characteristic of the silicon.</li>
+</ul>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Crypto Core Logic
+pub fn reconstruct_key_and_sign(msg: &amp;[u8]) -&gt; Signature {
+    // 1. Read Encrypted Part A
+    let k_a = flash.read(KEY_ADDR);
+    
+    // 2. Derive Part B from Silicon PUF
+    let k_b = puf.read_challenge(CHALLENGE_STATIC);
+    
+    // 3. Reconstruct in Registers ONLY (No RAM Write)
+    let k_real = k_a ^ k_b;
+    
+    // 4. Sign
+    let sig = falcon_sign(k_real, msg);
+    
+    // 5. Zeroize Registers
+    zeroize(k_real);
+    
+    sig
+}
+<span class="boring">}</span></code></pre></pre>
+<p><strong>Abyssal Result</strong>: Even if the attacker dumps the Flash and dumps the RAM (Cold Boot), they only get <code>Key_A</code> and random noise. Without the specific physics of that exact silicon chip (<code>Key_B</code>), the private key is mathematically irrecoverable.</p>
+<hr />
+<h2 id="case-study-3-the-smart-grid-substation-remote-attestation"><a class="header" href="#case-study-3-the-smart-grid-substation-remote-attestation">Case Study 3: The Smart Grid Substation (Remote Attestation)</a></h2>
+<p><strong>Environment</strong>: Electrical Grid Distribution Node.
+<strong>Threat Model</strong>: Insider threat replaces the bootloader with a "Evil Maid" version that bypasses checks but reports "OK" to the central server.</p>
+<h3 id="universal-remote-attestation"><a class="header" href="#universal-remote-attestation">Universal Remote Attestation</a></h3>
+<p>The Central SCADA Controller refuses to send the "Grid Connect" command unless the device proves its boot state.</p>
+<h4 id="the-protocol"><a class="header" href="#the-protocol">The Protocol</a></h4>
+<ol>
+<li><strong>Challenge</strong>: Server sends <code>Nonce_S</code> (Random 16 bytes).</li>
+<li><strong>Execution</strong>:
+<ul>
+<li>PQC-Boot calculates <code>H_kernel = SHA256(Kernel_Memory)</code>.</li>
+<li>PQC-Boot calculates <code>H_bios = SHA256(BIOS_ROM)</code>.</li>
+<li>PQC-Boot derives <code>K_ephemeral</code> from the boot session.</li>
+<li>PQC-Boot signs the Quote: <code>Sig = Falcon_Sign(K_device, H_kernel || H_bios || Nonce_S)</code>.</li>
+</ul>
+</li>
+<li><strong>Response</strong>: Device sends <code>Quote { H_kernel, H_bios, Nonce_S, Sig }</code>.</li>
+<li><strong>Verification</strong>:
+<ul>
+<li>Server verifies <code>Sig</code> using Device Public Key.</li>
+<li>Server verifies <code>Nonce_S</code> matches what it sent (Anti-Replay).</li>
+<li>Server verifies <code>H_kernel</code> matches the expected firmware hash ("v1.0.4").</li>
+</ul>
+</li>
+</ol>
+<p><strong>Code Snippet (<code>pqc-boot/core/src/lib.rs</code>)</strong>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn verify_boot_flow(&amp;self, nonce: &amp;[u8]) -&gt; AttestationReport {
+    // ... verify kernel ...
+    
+    // Generate Binding Quote
+    // "I attest that I have just verified Hash(Kernel) 
+    //  and I am running on Device(ID) with Nonce(N)"
+    let quote = Attestator::generate_quote(&amp;kernel_hash, nonce);
+    
+    // Only IF the report is valid does the OS get the keys to join the network.
+    quote
+}
+<span class="boring">}</span></code></pre></pre>
+<p><strong>Abyssal Result</strong>: The "Evil Maid" bootloader, lacking the hardware-bound Device Private Key or the correct Kernel Hash, cannot generate a valid signature for the Server's challenge. The grid connection remains denied.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="abyssal-threat-model-nation-state-vectors--mitigation"><a class="header" href="#abyssal-threat-model-nation-state-vectors--mitigation">Abyssal Threat Model: Nation-State Vectors &amp; Mitigation</a></h1>
+<p>This document provides a mathematical and architectural analysis of the threats PQC-Boot is designed to withstand, specifically targeting <strong>Q-Day</strong> (Quantum Decryption) and <strong>Advanced Persistent Threats (APTs)</strong>.</p>
+<h2 id="1-adversary-model"><a class="header" href="#1-adversary-model">1. Adversary Model</a></h2>
+<p>We assume an <strong>"Infinite Resource" Adversary ($A_{inf}$)</strong> with:</p>
+<ol>
+<li><strong>Quantum Computer</strong>: Capable of running Shor's Algorithm with $2^{60}$ qubits.</li>
+<li><strong>Physical Access</strong>: Can retrieve the device, decapsulate chips, and probe buses.</li>
+<li><strong>Network Omnipotence</strong>: Can capture, replay, and modify all traffic.</li>
+<li><strong>Supply Chain Injection</strong>: Can compromise the manufacturing facility.</li>
+</ol>
+<h2 id="2-mathematical-hardness-assumptions"><a class="header" href="#2-mathematical-hardness-assumptions">2. Mathematical Hardness Assumptions</a></h2>
+<p>PQC-Boot relies on the hardness of <strong>Module-LWE</strong> (Kyber) and <strong>NTRU</strong> (Falcon) problems over structured lattices.</p>
+<h3 id="21-falcon-512-digital-signatures"><a class="header" href="#21-falcon-512-digital-signatures">2.1 Falcon-512 (Digital Signatures)</a></h3>
+<p>Falcon is based on the <strong>NTRU Lattice Problem</strong>, specifically finding short vectors in a lattice.</p>
+<p><strong>Key Generation</strong>:
+$$ f, g \in R_q \text{ such that } f \cdot G - g \cdot F = q $$
+Where $R_q = \mathbb{Z}_q[x] / (x^n + 1)$. The private key is the basis ${ (g, -f), (G, -F) }$.</p>
+<p><strong>Signature</strong>:
+A signature $\mathbf{s} = (\mathbf{s}_1, \mathbf{s}_2)$ satisfies:
+$$ \mathbf{s}_1 + \mathbf{s}_2 \cdot h = 0 \pmod q $$
+$$ || (\mathbf{s}_1, \mathbf{s}_2) || \le \beta $$</p>
+<p><strong>Security Proof (ROM)</strong>:
+Falcon is proven secure in the Random Oracle Model (ROM) against chosen-message attacks (EUF-CMA) under the assumption that SIS (Short Integer Solution) is hard.
+$$ Adv^{EUF-CMA}<em>{Falcon}(\mathcal{A}) \le \epsilon</em>{SIS} + \frac{Q_s^2 + Q_h}{2^{n}} $$</p>
+<h3 id="22-kyber-768-key-encapsulation"><a class="header" href="#22-kyber-768-key-encapsulation">2.2 Kyber-768 (Key Encapsulation)</a></h3>
+<p>Kyber is based on the <strong>Module Learning With Errors (M-LWE)</strong> problem.</p>
+<p><strong>Encryption</strong>:
+$$ \mathbf{u} = \mathbf{A}^T \mathbf{r} + \mathbf{e}_1 $$
+$$ v = \mathbf{t}^T \mathbf{r} + e_2 + \text{Decompress}(m) $$
+Where $\mathbf{A}$ is a public matrix, $\mathbf{t}$ is the public key, and $\mathbf{r}, \mathbf{e}$ are small error terms.</p>
+<p><strong>Decryption</strong>:
+$$ m' = \text{Compress}(v - \mathbf{s}^T \mathbf{u}) $$</p>
+<p><strong>Security</strong>:
+IND-CCA2 secure assuming hardness of M-LWE.</p>
+<hr />
+<h2 id="3-defense-in-depth-architecture"><a class="header" href="#3-defense-in-depth-architecture">3. Defense-in-Depth Architecture</a></h2>
+<h3 id="31-countering-physical-key-extraction-side-channel"><a class="header" href="#31-countering-physical-key-extraction-side-channel">3.1 Countering Physical Key Extraction (Side-Channel)</a></h3>
+<p><strong>Threat</strong>: Cold Boot / Bus Snooping / Power Analysis.
+<strong>Mitigation</strong>: <strong>Key Masking &amp; RAM Scrambling</strong>.</p>
+<p><strong>Mathematical Protection</strong>:
+Let $K$ be the private key. We store it as shares:
+$$ K = S_1 \oplus S_2 \oplus \dots \oplus S_n $$
+During computation (e.g., Falcon Sign), operations are performed on shares without reconstructing $K$, or $K$ acts only on randomized inputs.</p>
+<p><strong>Code Enforcement</strong>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// MemoryProtector::load_masked_key
+pub fn load_masked_key(masked: &amp;[u8], mask: &amp;[u8]) -&gt; [u8; 32] {
+    // This value exists ONLY in CPU registers during the function call scope
+    let key = masked ^ mask; 
+    // Zeroized immediately after use
+    key
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="32-countering-evil-maid-supply-chain"><a class="header" href="#32-countering-evil-maid-supply-chain">3.2 Countering "Evil Maid" (Supply Chain)</a></h3>
+<p><strong>Threat</strong>: Attacker replaces the bootloader with a backdoored version.
+<strong>Mitigation</strong>: <strong>Remote Attestation &amp; Recursive Trust</strong>.</p>
+<p><strong>Flow</strong>:</p>
+<ol>
+<li><strong>Immutable Root</strong>: The Stage 1 (MBR) checks the signature of Stage 2.</li>
+<li><strong>Measured Boot</strong>: Stage 2 measures the Kernel.</li>
+<li><strong>PUF Root-of-Trust</strong>: The device identifies itself via a <strong>simulated silicon fingerprint</strong> (Physical Unclonable Function).
+<ul>
+<li><strong>Logic</strong>: A stable root key is derived on-demand from local hardware unique identifiers (CPUID, MAC, Serial).</li>
+<li><strong>Entropy Source</strong>: <code>PQC_IIOT_SILICON_FINGERPRINT_V4</code>.</li>
+<li><strong>Resilience</strong>: The key is never stored on disk. It is generated in RAM, used, and zeroized.</li>
+</ul>
+</li>
+</ol>
+<p>$$ K_{root} = \text{HMAC-SHA256}(\text{Silicon_Fingerprint}, \text{"PUF_SEED"}) $$</p>
+<p>If the bootloader is replaced, it cannot generate the correct $H(Kernel)$. If the hardware is cloned, it cannot generate $K_{PUF}$ because the new hardware will have a different silicon fingerprint.</p>
+<h3 id="33-countering-firmware-bricking-denial-of-service"><a class="header" href="#33-countering-firmware-bricking-denial-of-service">3.3 Countering Firmware Bricking (Denial of Service)</a></h3>
+<p><strong>Threat</strong>: Malicious or buggy update causes boot loop (Stuxnet variant).
+<strong>Mitigation</strong>: <strong>Dual-Bank Dead Man's Switch</strong>.</p>
+<p><strong>Logic</strong>:
+$$ \text{ActiveSlot} = \begin{cases} A, &amp; \text{if } RetryCount &lt; \text{Policy}_{Retries} \ B, &amp; \text{otherwise} \end{cases} $$
+The <code>Golden Image</code> provides an absolute fallback, guaranteed by <strong>Write-Protect GPIO</strong>.
+The <code>Policy</code> itself is immutable (signed/fused) to prevent downgrade attacks on safety parameters.</p>
+<h2 id="4-conclusion"><a class="header" href="#4-conclusion">4. Conclusion</a></h2>
+<p>This architecture provides <strong>Information-Theoretic Security</strong> against physical key compromise (via PUF/Masking) and <strong>Computational Security</strong> against Quantum Adversaries (via Lattice Hardness).</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="space-grade-physics-radiation-hardening--hybrid-security"><a class="header" href="#space-grade-physics-radiation-hardening--hybrid-security">Space-Grade Physics: Radiation Hardening &amp; Hybrid Security</a></h1>
+<p>This chapter details the "Immortal Architecture" implemented in PQC-Boot, designed to withstand the physical extremities of deep space and the mathematical uncertainties of the post-quantum era.</p>
+<h2 id="1-single-event-upsets-seus-and-the-physics-of-failure"><a class="header" href="#1-single-event-upsets-seus-and-the-physics-of-failure">1. Single Event Upsets (SEUs) and The Physics of Failure</a></h2>
+<p>In high-radiation environments (Low Earth Orbit, Van Allen Belts, or near Neutron Degeneration within reactors), ionizing particles can strike memory cells.</p>
+<h3 id="the-physics"><a class="header" href="#the-physics">The Physics</a></h3>
+<p>A heavy ion striking a silicon depletion region generates electron-hole pairs. If the deposited charge $Q_{dep}$ exceeds the critical charge $Q_{crit}$ of the memory cell, a bit flip occurs (0 $\to$ 1).</p>
+<p>$$ P(SEU) \propto \Phi \cdot \sigma_{cross} $$
+Where $\Phi$ is particle flux and $\sigma_{cross}$ is the device cross-section.</p>
+<h3 id="the-mitigation-software-triple-modular-redundancy-sw-tmr"><a class="header" href="#the-mitigation-software-triple-modular-redundancy-sw-tmr">The Mitigation: Software Triple Modular Redundancy (SW-TMR)</a></h3>
+<p>PQC-Boot does not rely on ECC RAM alone. It implements <strong>Tri-State Logic</strong> for all critical variables (Active Partition, Retry Counters).</p>
+<p><strong>Logic</strong>:
+Let state $S$ be stored as vector $\mathbf{v} = \langle v_1, v_2, v_3 \rangle$.
+The Read Operation $R(\mathbf{v})$ is defined as:</p>
+<p>$$ R(\mathbf{v}) = (v_1 \land v_2) \lor (v_2 \land v_3) \lor (v_1 \land v_3) $$</p>
+<p><strong>Self-Healing Probability</strong>:
+Assuming independent bit-flip probability $p_{err} = 10^{-9}$ per cycle.
+The probability of a system failure $P_{sys}$ (2 simultaneous bit flips in same word) is:</p>
+<p>$$ P_{sys} \approx 3 \cdot p_{err}^2 \approx 3 \cdot 10^{-18} $$</p>
+<p>This transforms a "Wait and Die" system into an "Immortal" self-repairing system.</p>
+<hr />
+<h2 id="2-the-hybrid-bet-hedge-model"><a class="header" href="#2-the-hybrid-bet-hedge-model">2. The Hybrid "Bet-Hedge" Model</a></h2>
+<p>As defined in <strong>Task 13</strong>, relying solely on new math (Lattice Cryptography) is a risk for mission-critical systems with 30-year lifespans.</p>
+<h3 id="the-strategy"><a class="header" href="#the-strategy">The Strategy</a></h3>
+<p>We verify <strong>AND</strong> conditions, not OR.</p>
+<p>$$ \text{Valid} = \text{Verify}<em>{Falcon}(M, S</em>{pq}) \land \text{Verify}<em>{Ed25519}(M, S</em>{cl}) $$</p>
+<h3 id="failure-modes-analysis"><a class="header" href="#failure-modes-analysis">Failure Modes Analysis</a></h3>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Scenario</th><th style="text-align: left">Falcon-512 Status</th><th style="text-align: left">Ed25519 Status</th><th style="text-align: left">System Result</th><th style="text-align: left">Analysis</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong>Today</strong></td><td style="text-align: left">Secure</td><td style="text-align: left">Secure</td><td style="text-align: left"><strong>Secure</strong></td><td style="text-align: left">Optimal state.</td></tr>
+<tr><td style="text-align: left"><strong>Shor's Algo (Q-Day)</strong></td><td style="text-align: left">Secure</td><td style="text-align: left"><strong>BROKEN</strong></td><td style="text-align: left"><strong>Secure</strong></td><td style="text-align: left">Falcon protects against Quantum Computer.</td></tr>
+<tr><td style="text-align: left"><strong>Lattice Math Flaw</strong></td><td style="text-align: left"><strong>BROKEN</strong></td><td style="text-align: left">Secure</td><td style="text-align: left"><strong>Secure</strong></td><td style="text-align: left">Ed25519 protects against math breakthrough.</td></tr>
+<tr><td style="text-align: left"><strong>Total Collapse</strong></td><td style="text-align: left">Broken</td><td style="text-align: left">Broken</td><td style="text-align: left">Vulnerable</td><td style="text-align: left">Requires both Physics and Math to break deeply.</td></tr>
+</tbody></table>
+</div>
+<h3 id="implementation-hybrid-post-quantum-pqh"><a class="header" href="#implementation-hybrid-post-quantum-pqh">Implementation: Hybrid Post-Quantum (PQH)</a></h3>
+<p>In <strong>Galactic Apex (V4)</strong>, we implement a <strong>Hybrid KEM</strong> for session keys. We mix the outputs of Kyber-1024 and X25519 using HKDF-SHA256.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// PqcClient::complete_connection
+let k_secret = kyber.decapsulate(k_sk, kyber_ct)?;
+let x_secret = x_sk.diffie_hellman(&amp;server_x_pk);
+
+// Mix secrets via HKDF
+let mut combiner = Hkdf::&lt;Sha256&gt;::new(None, &amp;k_secret);
+let mut final_secret = [0u8; 32];
+combiner.expand(&amp;x_secret.to_bytes(), &amp;mut final_secret)?;
+
+// Session is protected by both Lattice hardness and ECC
+let session = RatchetSession::initialize(final_secret, ...);
+<span class="boring">}</span></code></pre></pre>
+<p>If one is broken, the final secret remains computationally infeasible to derive. This is the <strong>V4 Galactic Apex</strong> standard.</p>
 
                     </main>
 

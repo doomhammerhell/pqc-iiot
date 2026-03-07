@@ -1,0 +1,386 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Whitepaper: PQC-Boot (Universal Loader) - PQC-IIoT Security Library</title>
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="Industrial IoT Post-Quantum Cryptography Implementation Guide">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../highlight.css">
+        <link rel="stylesheet" href="../tomorrow-night.css">
+        <link rel="stylesheet" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('light')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded "><a href="../index.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li class="chapter-item expanded "><a href="../architecture.html"><strong aria-hidden="true">2.</strong> Security Architecture</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/threat_model.html"><strong aria-hidden="true">2.1.</strong> Threat Model</a></li><li class="chapter-item expanded "><a href="../security/compliance.html"><strong aria-hidden="true">2.2.</strong> FIPS 140-3 Compliance</a></li></ol></li><li class="chapter-item expanded "><a href="../usage.html"><strong aria-hidden="true">3.</strong> Usage Guide</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../usage/mqtt.html"><strong aria-hidden="true">3.1.</strong> MQTT Integration</a></li><li class="chapter-item expanded "><a href="../usage/coap.html"><strong aria-hidden="true">3.2.</strong> CoAP Integration</a></li></ol></li><li class="chapter-item expanded "><a href="../hardware.html"><strong aria-hidden="true">4.</strong> Hardware Integration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../hardware/hal_internals.html"><strong aria-hidden="true">4.1.</strong> HAL Internals (Architecture)</a></li><li class="chapter-item expanded "><a href="../hardware/tpm.html"><strong aria-hidden="true">4.2.</strong> TPM 2.0</a></li><li class="chapter-item expanded "><a href="../hardware/secure_element.html"><strong aria-hidden="true">4.3.</strong> Secure Elements</a></li></ol></li><li class="chapter-item expanded "><a href="../api.html"><strong aria-hidden="true">5.</strong> API Reference</a></li><li class="chapter-item expanded "><a href="../dev_guide.html"><strong aria-hidden="true">6.</strong> Developer Guide</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../dev_guide/ci_cd.html"><strong aria-hidden="true">6.1.</strong> Industrial CI/CD Pipeline</a></li></ol></li><li class="chapter-item expanded "><a href="../crypto/math.html"><strong aria-hidden="true">7.</strong> Mathematical Foundations</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../crypto/proofs.html"><strong aria-hidden="true">7.1.</strong> Security Proofs & Reductions</a></li></ol></li><li class="chapter-item expanded "><a href="../security/formal_verification.html"><strong aria-hidden="true">8.</strong> Formal Security Analysis</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/fips_mapping.html"><strong aria-hidden="true">8.1.</strong> FIPS 140-3 Mapping</a></li></ol></li><li class="chapter-item expanded "><a href="../performance/benchmarks.html"><strong aria-hidden="true">9.</strong> Performance & Benchmarks</a></li><li class="chapter-item expanded "><a href="../roadmap/whitepaper_pqc_boot.html" class="active"><strong aria-hidden="true">10.</strong> Whitepaper: PQC-Boot (Universal Loader)</a></li><li class="chapter-item expanded "><a href="../usage/deep_iiot_scenarios.html"><strong aria-hidden="true">11.</strong> Deep IIoT Scenarios</a></li><li class="chapter-item expanded "><a href="../architecture/threat_model_abyssal.html"><strong aria-hidden="true">12.</strong> Abyssal Threat Model (Math & Lattice)</a></li><li class="chapter-item expanded "><a href="../architecture/space_grade_physics.html"><strong aria-hidden="true">13.</strong> Space-Grade Physics (TMR & Hybrid)</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">PQC-IIoT Security Library</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/doomhammerhell/pqc-iiot" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/doomhammerhell/pqc-iiot/edit/main/docs/src/src/roadmap/whitepaper_pqc_boot.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="whitepaper-pqc-boot--a-universal-post-quantum-secure-bootloader"><a class="header" href="#whitepaper-pqc-boot--a-universal-post-quantum-secure-bootloader">Whitepaper: PQC-Boot — A Universal Post-Quantum Secure Bootloader</a></h1>
+<h2 id="abstract"><a class="header" href="#abstract">Abstract</a></h2>
+<p>This whitepaper defines the architecture for <strong>PQC-Boot</strong>, a unified secure bootloader capable of enforcing Post-Quantum Cryptographic (PQC) verification on both modern <strong>UEFI</strong> systems and legacy <strong>BIOS (MBR)</strong> industrial controllers. By implementing a <code>no_std</code> Rust core with pluggable platform frontends, PQC-Boot provides a retroactive security path for critical infrastructure that lacks native TPM or Secure Boot hardware capabilities.</p>
+<h2 id="1-problem-statement"><a class="header" href="#1-problem-statement">1. Problem Statement</a></h2>
+<p>Industrial IoT (IIoT) environments are heterogeneous. While modern gateways run 64-bit UEFI with TPM 2.0, vast amounts of critical infrastructure operate on legacy 16-bit BIOS architectures (x86) without hardware root-of-trust.</p>
+<ul>
+<li><strong>Challenge A</strong>: Legacy systems cannot verify modern signatures (RSA-4096 or ECC) due to performance and memory constraints, let alone post-quantum algorithms (Falcon-512).</li>
+<li><strong>Challenge B</strong>: The transition to PQC requires a unified chain-of-trust that works across this generational divide.</li>
+</ul>
+<h2 id="2-system-architecture"><a class="header" href="#2-system-architecture">2. System Architecture</a></h2>
+<p>PQC-Boot utilizes a split-architecture design:</p>
+<ol>
+<li><strong>Boot Core (<code>pqc-boot-core</code>)</strong>: Platform-agnostic, <code>no_std</code> Rust library containing the Falcon-512 signature verification logic, SHA-256 hashing, and Kyber-768 key encapsulation (for update decryption).</li>
+<li><strong>Platform Abstraction Layer (PAL)</strong>: Traits for Console, Disk I/O, and Memory Allocation.</li>
+<li><strong>Frontends</strong>:
+<ul>
+<li><code>pqc-boot-uefi</code>: For modern boards (PE32+ executable).</li>
+<li><code>pqc-boot-mbr</code>: For legacy boards (Stage 1 + Stage 2 raw binary).</li>
+</ul>
+</li>
+</ol>
+<h3 id="21-the-boot-core-no_std"><a class="header" href="#21-the-boot-core-no_std">2.1 The Boot Core (<code>no_std</code>)</a></h3>
+<p>The core must operate without an Operating System.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span>#![no_std]
+<span class="boring">fn main() {
+</span>extern crate alloc;
+
+pub trait Platform {
+    fn read_disk(&amp;self, lba: u64, buffer: &amp;mut [u8]) -&gt; Result&lt;(), Error&gt;;
+    fn console_log(&amp;self, msg: &amp;str);
+    fn get_random_bytes(&amp;self, buffer: &amp;mut [u8]) -&gt; Result&lt;(), Error&gt;; // RDRAND or Jitter
+}
+
+pub fn verify_kernel(platform: &amp;impl Platform, kernel_lba: u64, size: usize, signature: &amp;[u8]) -&gt; bool {
+    // 1. Load kernel into RAM (chunked)
+    // 2. Compute SHA-256 hash
+    // 3. Verify Falcon-512 Signature against embedded Root of Trust Checksum
+    pqc_falcon::verify(PUBLIC_KEY, hash, signature)
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="3-implementation-strategy-uefi-modern"><a class="header" href="#3-implementation-strategy-uefi-modern">3. Implementation Strategy: UEFI (Modern)</a></h2>
+<p>Target: <code>x86_64-unknown-uefi</code></p>
+<ol>
+<li><strong>Entry Point</strong>: Rust <code>uefi::entry</code> macro.</li>
+<li><strong>Memory</strong>: Uses UEFI Boot Services <code>allocate_pool</code>.</li>
+<li><strong>Entropy</strong>: Calls <code>EFI_RNG_PROTOCOL</code>.</li>
+<li><strong>Flow</strong>:
+<ul>
+<li>PQC-Boot loads as a standard UEFI Application (<code>/EFI/BOOT/BOOTX64.EFI</code>).</li>
+<li>It validates the Linux Kernel (<code>vmlinuz</code>) signature stored in the ESP partition.</li>
+<li>If valid, it uses <code>LoadImage</code> / <code>StartImage</code> to hand over control.</li>
+<li>If invalid, it halts or reboots into recovery.</li>
+</ul>
+</li>
+</ol>
+<h2 id="4-implementation-strategy-legacy-bios-the-abyssal-challenge"><a class="header" href="#4-implementation-strategy-legacy-bios-the-abyssal-challenge">4. Implementation Strategy: Legacy BIOS (The "Abyssal" Challenge)</a></h2>
+<p>Target: <code>x86-unknown-none</code> (Custom Linker Script)</p>
+<p>Legacy BIOS starts the CPU in <strong>Real Mode (16-bit)</strong> with only 1MB addressable RAM. Falcon-512 requires significantly more resources and 32/64-bit arithmetic.</p>
+<h3 id="41-stage-1-the-mbr-512-bytes"><a class="header" href="#41-stage-1-the-mbr-512-bytes">4.1 Stage 1: The MBR (512 bytes)</a></h3>
+<ul>
+<li><strong>Role</strong>: Minimal assembly shim.</li>
+<li><strong>Action</strong>: Copies <strong>Stage 2</strong> from sectors 1-64 of the disk into RAM address <code>0x7E00</code>.</li>
+<li><strong>Constraint</strong>: No crypto here. Just raw block copy via BIOS INT 13h.</li>
+</ul>
+<h3 id="42-stage-2-the-rust-loader-protected-mode"><a class="header" href="#42-stage-2-the-rust-loader-protected-mode">4.2 Stage 2: The Rust Loader (Protected Mode)</a></h3>
+<p>This is the heart of the legacy implementation.</p>
+<ol>
+<li><strong>Mode Switch</strong>: Immediately disable interrupts (<code>cli</code>), enable A20 line, load a Global Descriptor Table (GDT), and switch CPU to <strong>32-bit Protected Mode</strong> (or Long Mode).</li>
+<li><strong>Stack Setup</strong>: Set stack pointer to a safe high memory region (e.g., <code>0x90000</code>).</li>
+<li><strong>Driver Initialization (PIO)</strong>: Since BIOS interrupts (INT 13h) are gone in Protected Mode, Stage 2 must include a minimal <strong>PIO (Programmed I/O)</strong> driver to read the IDE/SATA disk ports directly or switch back-and-forth to Real Mode (Unreal Mode) using "thunks".</li>
+<li><strong>Verification</strong>:
+<ul>
+<li>Load the Kernel (bzImage) to <code>0x100000</code> (1MB+ mark).</li>
+<li>Run <code>pqc-boot-core</code> verification (Falcon-512).</li>
+<li><strong>Floating Point Unit (FPU)</strong>: Enable SSE/AVX registers manually (BIOS leaves them off). Falcon requires FPU.</li>
+</ul>
+</li>
+</ol>
+<h3 id="43-entropy-gap"><a class="header" href="#43-entropy-gap">4.3 Entropy Gap</a></h3>
+<p>Legacy BIOS has no TRNG.</p>
+<ul>
+<li><strong>Solution</strong>: Implement a "Jitter Entropy" collector measuring CPU execution time variance of loops against the Real Time Clock (RTC) or Programmable Interval Timer (PIT).</li>
+<li><strong>Hardening</strong>: Mix this entropy with a stored seed (updated on every successful boot) to prevent boot-time predictability attacks.</li>
+</ul>
+<h2 id="5-memory-management-the-allocator"><a class="header" href="#5-memory-management-the-allocator">5. Memory Management (The Allocator)</a></h2>
+<p>Both implementations require dynamic memory for Falcon's large signature structs (approx 4-8KB stack + heap).</p>
+<ul>
+<li><strong>Global Allocator</strong>: We implement <code>GlobalAlloc</code> using a simple "Bump Pointer" or "Linked List" allocator over a reserved RAM region (e.g., <code>0x200000</code> - <code>0x400000</code>).</li>
+</ul>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[global_allocator]
+static ALLOCATOR: LockedHeap = LockedHeap::empty();
+
+fn init_heap() {
+    let heap_start = 0x200000;
+    let heap_size = 1024 * 1024; // 1MB Heap
+    unsafe { ALLOCATOR.lock().init(heap_start, heap_size) };
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="6-root-of-trust--provisioning"><a class="header" href="#6-root-of-trust--provisioning">6. Root of Trust &amp; Provisioning</a></h2>
+<ul>
+<li><strong>Key Storage</strong>: The "Root" Falcon Public Key is compiled directly into the <code>pqc-boot</code> binary.</li>
+<li><strong>Key Rotation</strong>: To rotate the root key, the bootloader binary itself must be updated. This update process is secured by the <em>current</em> valid bootloader (Recursive Trust).</li>
+</ul>
+<h2 id="7-roadmap-to-execution"><a class="header" href="#7-roadmap-to-execution">7. Roadmap to Execution</a></h2>
+<h3 id="phase-21-prototype-uefi"><a class="header" href="#phase-21-prototype-uefi">Phase 2.1: Prototype UEFI</a></h3>
+<ul>
+<li>Build <code>pqc-boot-uefi</code> standard application.</li>
+<li>Validate Kernel signing on QEMU OVMF.</li>
+</ul>
+<h3 id="phase-22-the-core-logic"><a class="header" href="#phase-22-the-core-logic">Phase 2.2: The Core Logic</a></h3>
+<ul>
+<li>Extract <code>falcon</code> and <code>sha2</code> into a pure <code>no_std</code> crate.</li>
+<li>Implement <code>GlobalAlloc</code> shim.</li>
+</ul>
+<h3 id="phase-23-legacy-assembly"><a class="header" href="#phase-23-legacy-assembly">Phase 2.3: Legacy Assembly</a></h3>
+<ul>
+<li>Write the MBR shim (NASM).</li>
+<li>Write the Mode Switch shim (32-bit Protected).</li>
+<li>Link Rust static library to the Assembly shim.</li>
+</ul>
+<h2 id="9-deep-iiot-security-abyssal-lvl"><a class="header" href="#9-deep-iiot-security-abyssal-lvl">9. Deep IIoT Security (Abyssal Lvl)</a></h2>
+<p>To counter Nation-State actors, PQC-Boot implements three "Incorruptible" layers.</p>
+<h3 id="91-universal-remote-attestation"><a class="header" href="#91-universal-remote-attestation">9.1 Universal Remote Attestation</a></h3>
+<p>Ensures the Controller knows <em>exactly</em> what code is running on the edge.</p>
+<ul>
+<li><strong>Mechanism</strong>: The bootloader hashes the Kernel and signs it with an ephemeral key derived from the boot state + a hardware secret (PUF).</li>
+<li><strong>Quote</strong>: <code>Sign_Falcon(Derived_Key, H(Kernel) || H(BIOS) || Nonce)</code></li>
+<li><strong>Benefit</strong>: Even if an attacker steals the MQTT keys, they cannot forge a valid Attestation Quote without running the legitimate, uncompromised bootloader.</li>
+</ul>
+<h3 id="92-dual-bank-ab-with-dead-mans-switch"><a class="header" href="#92-dual-bank-ab-with-dead-mans-switch">9.2 Dual-Bank A/B with Dead Man's Switch</a></h3>
+<p>Prevents "bricking" in inaccessible locations (e.g., nuclear sensors, subsea cables).</p>
+<ul>
+<li><strong>Partitioning</strong>:
+<ul>
+<li><strong>Slot A</strong>: Active Update.</li>
+<li><strong>Slot B</strong>: Previous Working Version.</li>
+<li><strong>Golden Image</strong>: Read-Only Factory Reset (Hardware Write-Protected).</li>
+<li><strong>Golden Image</strong>: Read-Only Factory Reset (Hardware Write-Protected).</li>
+</ul>
+</li>
+<li><strong>Logic</strong>: If the boot fails or the Watchdog Timer isn't reset within the policy-defined window (e.g., 300s), the "Dead Man's Switch" checks the <code>SecurityPolicy</code> max_retries. Upon exhaustion, it automatically reverts to the previous slot on the next reboot.</li>
+</ul>
+<h3 id="93-anti-tamper-memory-protection"><a class="header" href="#93-anti-tamper-memory-protection">9.3 Anti-Tamper Memory Protection</a></h3>
+<p>Mitigates Cold Boot and Physical Probing attacks.</p>
+<ul>
+<li><strong>RAM Scrambling</strong>: Before loading the kernel, the bootloader writes pseudo-random patterns to the entire RAM to clear residual secrets.</li>
+<li><strong>Key Masking</strong>: Long-term keys are never stored in plaintext RAM. They are split (<code>Key_A ^ Key_B</code>) and only reconstructed in CPU registers during the Falcon signature verification.</li>
+</ul>
+<h2 id="10-conclusion"><a class="header" href="#10-conclusion">10. Conclusion</a></h2>
+<p>PQC-Boot allows operators to extend the lifespan of legacy industrial hardware by wrapping them in a Post-Quantum security layer. With the addition of <strong>Remote Attestation</strong> and <strong>Dual-Bank Redundancy</strong>, it provides a defense-in-depth architecture suitable for the most critical infrastructure on Earth.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../performance/benchmarks.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../usage/deep_iiot_scenarios.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../performance/benchmarks.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../usage/deep_iiot_scenarios.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

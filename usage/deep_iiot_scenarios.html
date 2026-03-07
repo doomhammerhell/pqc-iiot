@@ -1,0 +1,373 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Deep IIoT Scenarios - PQC-IIoT Security Library</title>
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="Industrial IoT Post-Quantum Cryptography Implementation Guide">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../highlight.css">
+        <link rel="stylesheet" href="../tomorrow-night.css">
+        <link rel="stylesheet" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('light')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded "><a href="../index.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li class="chapter-item expanded "><a href="../architecture.html"><strong aria-hidden="true">2.</strong> Security Architecture</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/threat_model.html"><strong aria-hidden="true">2.1.</strong> Threat Model</a></li><li class="chapter-item expanded "><a href="../security/compliance.html"><strong aria-hidden="true">2.2.</strong> FIPS 140-3 Compliance</a></li></ol></li><li class="chapter-item expanded "><a href="../usage.html"><strong aria-hidden="true">3.</strong> Usage Guide</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../usage/mqtt.html"><strong aria-hidden="true">3.1.</strong> MQTT Integration</a></li><li class="chapter-item expanded "><a href="../usage/coap.html"><strong aria-hidden="true">3.2.</strong> CoAP Integration</a></li></ol></li><li class="chapter-item expanded "><a href="../hardware.html"><strong aria-hidden="true">4.</strong> Hardware Integration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../hardware/hal_internals.html"><strong aria-hidden="true">4.1.</strong> HAL Internals (Architecture)</a></li><li class="chapter-item expanded "><a href="../hardware/tpm.html"><strong aria-hidden="true">4.2.</strong> TPM 2.0</a></li><li class="chapter-item expanded "><a href="../hardware/secure_element.html"><strong aria-hidden="true">4.3.</strong> Secure Elements</a></li></ol></li><li class="chapter-item expanded "><a href="../api.html"><strong aria-hidden="true">5.</strong> API Reference</a></li><li class="chapter-item expanded "><a href="../dev_guide.html"><strong aria-hidden="true">6.</strong> Developer Guide</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../dev_guide/ci_cd.html"><strong aria-hidden="true">6.1.</strong> Industrial CI/CD Pipeline</a></li></ol></li><li class="chapter-item expanded "><a href="../crypto/math.html"><strong aria-hidden="true">7.</strong> Mathematical Foundations</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../crypto/proofs.html"><strong aria-hidden="true">7.1.</strong> Security Proofs & Reductions</a></li></ol></li><li class="chapter-item expanded "><a href="../security/formal_verification.html"><strong aria-hidden="true">8.</strong> Formal Security Analysis</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../security/fips_mapping.html"><strong aria-hidden="true">8.1.</strong> FIPS 140-3 Mapping</a></li></ol></li><li class="chapter-item expanded "><a href="../performance/benchmarks.html"><strong aria-hidden="true">9.</strong> Performance & Benchmarks</a></li><li class="chapter-item expanded "><a href="../roadmap/whitepaper_pqc_boot.html"><strong aria-hidden="true">10.</strong> Whitepaper: PQC-Boot (Universal Loader)</a></li><li class="chapter-item expanded "><a href="../usage/deep_iiot_scenarios.html" class="active"><strong aria-hidden="true">11.</strong> Deep IIoT Scenarios</a></li><li class="chapter-item expanded "><a href="../architecture/threat_model_abyssal.html"><strong aria-hidden="true">12.</strong> Abyssal Threat Model (Math & Lattice)</a></li><li class="chapter-item expanded "><a href="../architecture/space_grade_physics.html"><strong aria-hidden="true">13.</strong> Space-Grade Physics (TMR & Hybrid)</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">PQC-IIoT Security Library</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/doomhammerhell/pqc-iiot" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/doomhammerhell/pqc-iiot/edit/main/docs/src/src/usage/deep_iiot_scenarios.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="deep-iiot-scenarios-use-cases-for-abyssal-security"><a class="header" href="#deep-iiot-scenarios-use-cases-for-abyssal-security">Deep IIoT Scenarios: Use Cases for "Abyssal" Security</a></h1>
+<p>This document outlines deployment scenarios for <strong>PQC-Boot</strong> in critical infrastructure, where failure or compromise leads to catastrophic physical consequences.</p>
+<h2 id="case-study-1-the-nuclear-reactor-failsafe-controller"><a class="header" href="#case-study-1-the-nuclear-reactor-failsafe-controller">Case Study 1: The Nuclear Reactor Failsafe Controller</a></h2>
+<p><strong>Environment</strong>: Primary Cooling Loop Control Unit (PLCU).
+<strong>Threat Model</strong>: Nation-State actor attempting to inject malicious firmware to disable cooling pumps (Stuxnet-style).
+<strong>Constraint</strong>: System is air-gapped but updates are delivered via technicians with toughbooks (potential vector). Physical access is restricted but not impossible for insiders.</p>
+<h3 id="the-dead-mans-switch-configuration"><a class="header" href="#the-dead-mans-switch-configuration">The "Dead Man's Switch" Configuration</a></h3>
+<p>To prevent a bad update (or a malicious one that wipes the system) from causing a meltdown, the controller uses the <strong>Dual-Bank A/B with Dead Man's Switch</strong>.</p>
+<h4 id="configuration-srclibrs-snippet"><a class="header" href="#configuration-srclibrs-snippet">Configuration (<code>src/lib.rs</code> snippet)</a></h4>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// HARDWARE_CONFIG: PLCU_V2 (Policy-Driven)
+pub struct SecurityPolicy {
+    pub max_retries: u8,
+    pub watchdog_timeout_ms: u32,
+}
+
+// this would be burnt into eFuses or signed config partition
+pub const POLICY: SecurityPolicy = SecurityPolicy {
+    max_retries: 3,              // Configurable resilience
+    watchdog_timeout_ms: 300_000 // 5 minutes
+};
+
+pub const PARTITION_LAYOUT: PartitionTable = PartitionTable {
+    slot_a: Partition { start_lba: 2048, size: 32768, active: true, retry_count: 0 },
+    slot_b: Partition { start_lba: 34816, size: 32768, active: false, retry_count: 0 },
+    golden: Partition { start_lba: 67584, size: 8192, active: true, retry_count: 0 },
+};
+<span class="boring">}</span></code></pre></pre>
+<h4 id="the-logic-flow"><a class="header" href="#the-logic-flow">The Logic Flow</a></h4>
+<ol>
+<li><strong>Update</strong>: Technician uploads standard signed firmware to <code>Slot A</code>.</li>
+<li><strong>Boot</strong>: PQC-Boot verifies Falcon-512 signature. <strong>Result: Valid</strong>.</li>
+<li><strong>Execution</strong>: Kernel loads, but contains a subtle logic bomb that hangs the cooling control loop.</li>
+<li><strong>Reaction</strong>:
+<ul>
+<li>The OS Watchdog driver fails to "pet" the hardware watchdog because the thread is hung.</li>
+<li><strong>T+300s</strong>: Hardware Watchdog resets the CPU.</li>
+<li><strong>Reboot 1</strong>: PQC-Boot sees <code>nvram_counter == 1</code>. Trie Slot A again.</li>
+<li>...</li>
+<li><strong>Reboot 3</strong>: PQC-Boot sees <code>nvram_counter &gt;= POLICY.max_retries</code> (3).</li>
+<li><strong>Action</strong>: <code>PartitionManager</code> swaps Active Slot to <code>Slot B</code> (Previous Known Good).</li>
+<li><strong>Result</strong>: Reactor cooling control is restored automatically.</li>
+</ul>
+</li>
+</ol>
+<p><strong>Abyssal Feature</strong>: The <code>Golden Image</code> provides a tertiary fallback that is physically write-protected (GPIO pin grounded), meaning no software can overwrite it.</p>
+<hr />
+<h2 id="case-study-2-the-subsea-cable-repeater-anti-tamper"><a class="header" href="#case-study-2-the-subsea-cable-repeater-anti-tamper">Case Study 2: The Subsea Cable Repeater (Anti-Tamper)</a></h2>
+<p><strong>Environment</strong>: Optical Amplifier located 4,000m deep.
+<strong>Threat Model</strong>: Sophisticated adversary retrieving the physical device (via submarine) to extract private keys for Man-in-the-Middle traffic decryption.
+<strong>Constraint</strong>: Physical access is possible by the adversary. Cold Boot attacks are feasible if the device is brought to the surface quickly.</p>
+<h3 id="memory-obfuscation--key-masking"><a class="header" href="#memory-obfuscation--key-masking">Memory Obfuscation &amp; Key Masking</a></h3>
+<p>To prevent key extraction from RAM, PQC-Boot employs <strong>Anti-Tamper Memory Protection</strong>.</p>
+<h4 id="memory-scrambling-srclibrs-logic"><a class="header" href="#memory-scrambling-srclibrs-logic">Memory Scrambling (<code>src/lib.rs</code> logic)</a></h4>
+<p>Before any sensitive material is loaded, the RAM is actively erased with high-entropy patterns.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// BootVerifier::verify_boot_flow
+pub fn verify_boot_flow(...) {
+    // 1. Anti-Tamper: Scramble RAM
+    // Writes pseudo-random noise to 100% of available DRAM
+    // prevents "data burn-in" or remnance from previous sessions.
+    MemoryProtector::scramble_ram(DRAM_START, DRAM_SIZE);
+    
+    // ... Load Kernel ...
+}
+<span class="boring">}</span></code></pre></pre>
+<h4 id="key-masking-split-key-storage"><a class="header" href="#key-masking-split-key-storage">Key Masking (Split-Key Storage)</a></h4>
+<p>The Device Identity Key (Falcon Private Key) is NOT stored in plain text in the SPI Flash or RAM.</p>
+<p>$$ K_{real} = K_{partA} \oplus K_{partB} $$</p>
+<ul>
+<li><strong>Part A</strong>: Stored in SPI Flash (Encrypted).</li>
+<li><strong>Part B</strong>: Derived from Physical Unclonable Function (PUF) characteristic of the silicon.</li>
+</ul>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Crypto Core Logic
+pub fn reconstruct_key_and_sign(msg: &amp;[u8]) -&gt; Signature {
+    // 1. Read Encrypted Part A
+    let k_a = flash.read(KEY_ADDR);
+    
+    // 2. Derive Part B from Silicon PUF
+    let k_b = puf.read_challenge(CHALLENGE_STATIC);
+    
+    // 3. Reconstruct in Registers ONLY (No RAM Write)
+    let k_real = k_a ^ k_b;
+    
+    // 4. Sign
+    let sig = falcon_sign(k_real, msg);
+    
+    // 5. Zeroize Registers
+    zeroize(k_real);
+    
+    sig
+}
+<span class="boring">}</span></code></pre></pre>
+<p><strong>Abyssal Result</strong>: Even if the attacker dumps the Flash and dumps the RAM (Cold Boot), they only get <code>Key_A</code> and random noise. Without the specific physics of that exact silicon chip (<code>Key_B</code>), the private key is mathematically irrecoverable.</p>
+<hr />
+<h2 id="case-study-3-the-smart-grid-substation-remote-attestation"><a class="header" href="#case-study-3-the-smart-grid-substation-remote-attestation">Case Study 3: The Smart Grid Substation (Remote Attestation)</a></h2>
+<p><strong>Environment</strong>: Electrical Grid Distribution Node.
+<strong>Threat Model</strong>: Insider threat replaces the bootloader with a "Evil Maid" version that bypasses checks but reports "OK" to the central server.</p>
+<h3 id="universal-remote-attestation"><a class="header" href="#universal-remote-attestation">Universal Remote Attestation</a></h3>
+<p>The Central SCADA Controller refuses to send the "Grid Connect" command unless the device proves its boot state.</p>
+<h4 id="the-protocol"><a class="header" href="#the-protocol">The Protocol</a></h4>
+<ol>
+<li><strong>Challenge</strong>: Server sends <code>Nonce_S</code> (Random 16 bytes).</li>
+<li><strong>Execution</strong>:
+<ul>
+<li>PQC-Boot calculates <code>H_kernel = SHA256(Kernel_Memory)</code>.</li>
+<li>PQC-Boot calculates <code>H_bios = SHA256(BIOS_ROM)</code>.</li>
+<li>PQC-Boot derives <code>K_ephemeral</code> from the boot session.</li>
+<li>PQC-Boot signs the Quote: <code>Sig = Falcon_Sign(K_device, H_kernel || H_bios || Nonce_S)</code>.</li>
+</ul>
+</li>
+<li><strong>Response</strong>: Device sends <code>Quote { H_kernel, H_bios, Nonce_S, Sig }</code>.</li>
+<li><strong>Verification</strong>:
+<ul>
+<li>Server verifies <code>Sig</code> using Device Public Key.</li>
+<li>Server verifies <code>Nonce_S</code> matches what it sent (Anti-Replay).</li>
+<li>Server verifies <code>H_kernel</code> matches the expected firmware hash ("v1.0.4").</li>
+</ul>
+</li>
+</ol>
+<p><strong>Code Snippet (<code>pqc-boot/core/src/lib.rs</code>)</strong>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn verify_boot_flow(&amp;self, nonce: &amp;[u8]) -&gt; AttestationReport {
+    // ... verify kernel ...
+    
+    // Generate Binding Quote
+    // "I attest that I have just verified Hash(Kernel) 
+    //  and I am running on Device(ID) with Nonce(N)"
+    let quote = Attestator::generate_quote(&amp;kernel_hash, nonce);
+    
+    // Only IF the report is valid does the OS get the keys to join the network.
+    quote
+}
+<span class="boring">}</span></code></pre></pre>
+<p><strong>Abyssal Result</strong>: The "Evil Maid" bootloader, lacking the hardware-bound Device Private Key or the correct Kernel Hash, cannot generate a valid signature for the Server's challenge. The grid connection remains denied.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../roadmap/whitepaper_pqc_boot.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../architecture/threat_model_abyssal.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../roadmap/whitepaper_pqc_boot.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../architecture/threat_model_abyssal.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>
