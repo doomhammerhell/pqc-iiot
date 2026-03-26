@@ -52,11 +52,67 @@ impl AttestationQuote {
         hasher.update(&self.nonce);
         let digest = hasher.finalize();
         
-        if !falcon.verify(&self.signature, &digest, &self.ak_public_key)
+        if !falcon.verify(&self.ak_public_key, &digest, &self.signature)
             .map_err(|e| Error::CryptoError(format!("Quote Signature Invalid: {:?}", e)))? 
         {
             return Err(Error::CryptoError("Quote Signature Verification Failed (Logic)".into()));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quote_verify_accepts_valid_signature() {
+        let falcon = Falcon::new();
+        let (pk, sk) = falcon.generate_keypair().expect("falcon keygen");
+
+        let pcr_digest = vec![7u8; 32];
+        let nonce = vec![1u8, 2, 3, 4];
+
+        let mut hasher = Sha256::new();
+        hasher.update(&pcr_digest);
+        hasher.update(&nonce);
+        let digest = hasher.finalize();
+        let signature = falcon.sign(&sk, &digest).expect("falcon sign");
+
+        let quote = AttestationQuote {
+            pcr_digest: pcr_digest.clone(),
+            nonce: nonce.clone(),
+            signature,
+            ak_public_key: pk,
+        };
+
+        quote
+            .verify(&nonce, &pcr_digest)
+            .expect("quote should verify");
+    }
+
+    #[test]
+    fn quote_verify_rejects_tampered_signature() {
+        let falcon = Falcon::new();
+        let (pk, sk) = falcon.generate_keypair().expect("falcon keygen");
+
+        let pcr_digest = vec![9u8; 32];
+        let nonce = vec![4u8, 3, 2, 1];
+
+        let mut hasher = Sha256::new();
+        hasher.update(&pcr_digest);
+        hasher.update(&nonce);
+        let digest = hasher.finalize();
+        let mut signature = falcon.sign(&sk, &digest).expect("falcon sign");
+        signature[0] ^= 0x01;
+
+        let quote = AttestationQuote {
+            pcr_digest: pcr_digest.clone(),
+            nonce: nonce.clone(),
+            signature,
+            ak_public_key: pk,
+        };
+
+        assert!(quote.verify(&nonce, &pcr_digest).is_err());
     }
 }

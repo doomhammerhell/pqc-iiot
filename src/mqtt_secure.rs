@@ -81,18 +81,29 @@ struct OwnKeys {
 
 /// Canonical payload used for signing/verifying key announcements.
 /// Excludes the detached signature field to avoid recursion.
-fn key_announcement_payload(keys: &PeerKeys) -> Vec<u8> {
+fn key_announcement_payload(peer_id: &str, keys: &PeerKeys) -> Vec<u8> {
     let mut buf = Vec::new();
+    // Domain separation + identity binding: prevents re-publishing a signed announcement under a different topic/id.
+    buf.extend_from_slice(b"pqc-iiot:key-announce:v1");
+    buf.extend_from_slice(&(peer_id.as_bytes().len() as u16).to_be_bytes());
+    buf.extend_from_slice(peer_id.as_bytes());
+    buf.extend_from_slice(&(keys.kem_pk.len() as u32).to_be_bytes());
     buf.extend_from_slice(&keys.kem_pk);
+    buf.extend_from_slice(&(keys.sig_pk.len() as u32).to_be_bytes());
     buf.extend_from_slice(&keys.sig_pk);
-    buf.extend_from_slice(&keys.last_sequence.to_be_bytes());
-    buf.push(keys.is_trusted as u8);
 
     if let Some(quote) = &keys.quote {
+        buf.push(1);
+        buf.extend_from_slice(&(quote.pcr_digest.len() as u32).to_be_bytes());
         buf.extend_from_slice(&quote.pcr_digest);
+        buf.extend_from_slice(&(quote.nonce.len() as u32).to_be_bytes());
         buf.extend_from_slice(&quote.nonce);
+        buf.extend_from_slice(&(quote.signature.len() as u32).to_be_bytes());
         buf.extend_from_slice(&quote.signature);
+        buf.extend_from_slice(&(quote.ak_public_key.len() as u32).to_be_bytes());
         buf.extend_from_slice(&quote.ak_public_key);
+    } else {
+        buf.push(0);
     }
 
     buf
@@ -209,7 +220,7 @@ impl SecureMqttClient {
         let keystore = KeyStore::load_from_file(keystore_path_str)?;
 
         // Instantiate SoftwareSecurityProvider
-        let provider = Arc::new(SoftwareSecurityProvider::new(
+        let provider = Arc::new(SoftwareSecurityProvider::new_exportable(
             sk.clone(),
             pk.clone(),
             sig_sk.clone(),
@@ -462,7 +473,7 @@ impl SecureMqttClient {
             };
 
             // Sign announcement with our identity key
-            let payload = key_announcement_payload(&peer_keys);
+            let payload = key_announcement_payload(&self.client_id, &peer_keys);
             let signature = self.provider.sign(&payload)?;
             peer_keys.key_signature = Some(signature);
 
@@ -609,6 +620,7 @@ impl SecureMqttClient {
             last_sequence: 0,
             is_trusted: true, 
             quote: None,
+            key_signature: None,
         };
 
         // Cache the peer's keys for future encrypted communications
@@ -808,7 +820,7 @@ impl SecureMqttClient {
             &keys.sig_pk
         };
 
-        let payload = key_announcement_payload(&keys);
+        let payload = key_announcement_payload(sender_id, &keys);
         let is_valid = self
             .falcon
             .verify(verify_pk, &payload, signature)
@@ -819,6 +831,13 @@ impl SecureMqttClient {
             self.metrics.inc_failed_handshake();
             return Ok(());
         }
+
+        // Trust is local policy; never accept remote "is_trusted" claims.
+        keys.is_trusted = self
+            .keystore
+            .get(sender_id)
+            .map(|k| k.is_trusted)
+            .unwrap_or(false);
 
         // TRUST CONTINUITY
         if let Some(existing) = self.keystore.get(sender_id) {

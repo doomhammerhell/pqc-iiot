@@ -124,10 +124,12 @@ pub mod base64_serde {
 
 /// Optional Base64 helper
 pub mod base64_serde_opt {
+    use alloc::string::String;
     use alloc::vec::Vec;
     use base64::{engine::general_purpose, Engine as _};
     use serde::{Deserialize, Serializer, Deserializer};
 
+    /// Serialize optional bytes to a Base64 string.
     pub fn serialize<S: Serializer>(v: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
         match v {
             Some(bytes) => {
@@ -138,6 +140,7 @@ pub mod base64_serde_opt {
         }
     }
 
+    /// Deserialize an optional Base64 string into bytes.
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<u8>>, D::Error> {
         let opt: Option<String> = Option::deserialize(d)?;
         Ok(opt

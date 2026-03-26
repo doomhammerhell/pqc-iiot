@@ -1,4 +1,4 @@
-use pqc_iiot::client_state::{PqcClient, Unprovisioned, Provisioned, Connected};
+use pqc_iiot::client_state::PqcClient;
 use pqc_iiot::security::provider::SoftwareSecurityProvider;
 use pqc_iiot::{Kyber, Falcon};
 use pqc_iiot::crypto::traits::{PqcKEM, PqcSignature};

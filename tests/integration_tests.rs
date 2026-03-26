@@ -2,7 +2,7 @@ use pqc_iiot::{coap_secure::SecureCoapClient, mqtt_secure::SecureMqttClient};
 use rumqttc::{Client as RumqttClient, MqttOptions, QoS};
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
-use base64;
+use base64::{engine::general_purpose, Engine as _};
 mod common;
 
 #[test]
@@ -319,7 +319,7 @@ fn test_strict_mode() -> Result<(), Box<dyn std::error::Error>> {
         let mut unknown_client = SecureMqttClient::new("localhost", port, &unknown_id_c).unwrap();
         unknown_client.bootstrap().unwrap();
         loop {
-            if let Err(e) = unknown_client.poll(|_,_| {}) {
+            if let Err(_e) = unknown_client.poll(|_,_| {}) {
                  // eprintln!("Unknown client poll error: {}", e);
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -379,7 +379,11 @@ fn test_strict_mode() -> Result<(), Box<dyn std::error::Error>> {
     
     // Trusted Client Thread
     std::thread::spawn(move || {
-        let mut trusted_client = SecureMqttClient::new("localhost", port, &trusted_id_c).unwrap();
+        // Keep trusted client permissive for this test; we are validating strict-mode behavior
+        // on the strict client side only.
+        let mut trusted_client = SecureMqttClient::new("localhost", port, &trusted_id_c)
+            .unwrap()
+            .with_strict_mode(false);
         let key = trusted_client.get_identity_key();
         tx_trusted_key.send(key).unwrap();
         trusted_client.bootstrap().unwrap();
@@ -400,7 +404,7 @@ fn test_strict_mode() -> Result<(), Box<dyn std::error::Error>> {
     let trusted_key = rx_trusted_key.recv().unwrap();
     
     // Strict Client Thread (Part 2)
-    let unknown_id_c2 = unknown_id.clone();
+    let _unknown_id_c2 = unknown_id.clone();
     std::thread::spawn(move || {
         let mut strict_client = SecureMqttClient::new("localhost", port, &strict_id).unwrap()
             .with_strict_mode(true); // Default keep alive
@@ -443,8 +447,8 @@ fn test_malicious_key_announcement_rejected() -> Result<(), Box<dyn std::error::
     opts.set_clean_session(true);
     let (mut mal_client, mut mal_conn) = RumqttClient::new(opts, 10);
     let bogus = serde_json::json!({
-        "kem_pk": base64::encode("bogus_kem"),
-        "sig_pk": base64::encode("bogus_sig"),
+        "kem_pk": general_purpose::STANDARD.encode(b"bogus_kem"),
+        "sig_pk": general_purpose::STANDARD.encode(b"bogus_sig"),
         "last_sequence": 0,
         "is_trusted": false
     });
@@ -491,6 +495,79 @@ fn test_malicious_key_announcement_rejected() -> Result<(), Box<dyn std::error::
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(ready, "Bob should accept signed announcement from Alice");
+
+    Ok(())
+}
+
+#[test]
+fn test_key_announcement_binds_peer_id() -> Result<(), Box<dyn std::error::Error>> {
+    let port = 29836;
+    common::start_mqtt_broker(port);
+    let suffix: u32 = rand::random();
+    let key_prefix = format!("pqc/bind_keys_{}/", suffix);
+
+    // Victim allows TOFU but must still reject announcements re-published under a different peer id.
+    let mut victim = SecureMqttClient::new("localhost", port, "victim_bind")?
+        .with_strict_mode(false)
+        .with_key_prefix(&key_prefix);
+    victim.bootstrap()?;
+
+    // Alice publishes a legitimate signed announcement.
+    let mut alice = SecureMqttClient::new("localhost", port, "alice_bind")?
+        .with_strict_mode(false)
+        .with_key_prefix(&key_prefix);
+    alice.bootstrap()?;
+
+    // Sniff Alice's retained announcement and re-publish it as if it belonged to "bob_bind".
+    let mut opts = MqttOptions::new("sniffer", "localhost", port);
+    opts.set_clean_session(true);
+    let (mut sniff_client, mut sniff_conn) = RumqttClient::new(opts, 10);
+    sniff_client.subscribe(
+        format!("{}{}", key_prefix, "alice_bind"),
+        QoS::AtLeastOnce,
+    )?;
+
+    let (tx_payload, rx_payload) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for notification in sniff_conn.iter() {
+            if let Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p))) = notification {
+                let _ = tx_payload.send(p.payload.to_vec());
+                break;
+            }
+        }
+    });
+
+    let alice_payload = rx_payload.recv_timeout(Duration::from_secs(2))?;
+    sniff_client.publish(
+        format!("{}{}", key_prefix, "bob_bind"),
+        QoS::AtLeastOnce,
+        true,
+        alice_payload,
+    )?;
+
+    // Victim should accept Alice but reject the re-bound "bob_bind" record.
+    let start = Instant::now();
+    let mut got_alice = false;
+    while start.elapsed() < Duration::from_secs(3) {
+        victim.poll(|_, _| {})?;
+        got_alice |= victim.has_peer("alice_bind");
+        if got_alice {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(300) {
+        victim.poll(|_, _| {})?;
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    assert!(got_alice, "Victim should accept Alice's announcement");
+    assert!(
+        !victim.has_peer("bob_bind"),
+        "Victim should reject a signed announcement re-published under a different peer id"
+    );
 
     Ok(())
 }
