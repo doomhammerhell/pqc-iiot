@@ -10,17 +10,17 @@
 //!
 //! ```rust
 //! use pqc_iiot::crypto::traits::{PqcKEM, PqcSignature};
-//! use pqc_iiot::{Kyber, Falcon};
+//! use pqc_iiot::{Falcon, FalconSecurityLevel, Kyber, KyberSecurityLevel};
 //!
 //! // Key Encapsulation
-//! let kyber = Kyber::new(KyberSecurityLevel::Kyber768);
+//! let kyber = Kyber::new_with_level(KyberSecurityLevel::Kyber768);
 //! let (pk, sk) = kyber.generate_keypair().unwrap();
 //! let (ct, ss1) = kyber.encapsulate(&pk).unwrap();
 //! let ss2 = kyber.decapsulate(&sk, &ct).unwrap();
 //! assert_eq!(ss1, ss2);
 //!
 //! // Digital Signatures
-//! let falcon = Falcon::new(FalconSecurityLevel::Falcon512);
+//! let falcon = Falcon::new_with_level(FalconSecurityLevel::Falcon512);
 //! let (pk, sk) = falcon.generate_keypair().unwrap();
 //! let msg = b"Hello, world!";
 //! let sig = falcon.sign(&sk, msg).unwrap();
@@ -110,8 +110,9 @@ impl std::error::Error for CryptoError {}
 /// ```rust
 /// use pqc_iiot::crypto::traits::PqcKEM;
 /// use pqc_iiot::Kyber;
+/// use pqc_iiot::KyberSecurityLevel;
 ///
-/// let kem = Kyber::new(KyberSecurityLevel::Kyber768);
+/// let kem = Kyber::new_with_level(KyberSecurityLevel::Kyber768);
 /// let (pk, sk) = kem.generate_keypair().unwrap();
 /// let (ct, ss1) = kem.encapsulate(&pk).unwrap();
 /// let ss2 = kem.decapsulate(&sk, &ct).unwrap();
@@ -177,8 +178,9 @@ pub trait PqcKEM {
 /// ```rust
 /// use pqc_iiot::crypto::traits::PqcSignature;
 /// use pqc_iiot::Falcon;
+/// use pqc_iiot::FalconSecurityLevel;
 ///
-/// let signer = Falcon::new(FalconSecurityLevel::Falcon512);
+/// let signer = Falcon::new_with_level(FalconSecurityLevel::Falcon512);
 /// let (pk, sk) = signer.generate_keypair().unwrap();
 /// let msg = b"Hello, world!";
 /// let sig = signer.sign(&sk, msg).unwrap();
@@ -246,8 +248,9 @@ pub trait PqcSignature {
 /// ```rust
 /// use pqc_iiot::crypto::traits::SecurityLevel;
 /// use pqc_iiot::Kyber;
+/// use pqc_iiot::KyberSecurityLevel;
 ///
-/// let mut kem = Kyber::new(KyberSecurityLevel::Kyber768);
+/// let mut kem = Kyber::new_with_level(KyberSecurityLevel::Kyber768);
 /// println!("Current security level: {}", kem.security_level());
 /// kem.set_security_level(1).unwrap(); // Change to Level 1
 /// ```
@@ -283,9 +286,10 @@ pub trait SecurityLevel {
 /// ```rust
 /// use pqc_iiot::crypto::traits::KeyRotation;
 /// use pqc_iiot::Kyber;
+/// use pqc_iiot::KyberSecurityLevel;
 /// use std::time::Duration;
 ///
-/// let mut kem = Kyber::new(KyberSecurityLevel::Kyber768)
+/// let mut kem = Kyber::new_with_level(KyberSecurityLevel::Kyber768)
 ///     .with_key_rotation_interval(Duration::from_secs(3600));
 /// kem.rotate_keys().unwrap();
 /// println!("Time until next rotation: {:?}", kem.time_until_rotation());
@@ -314,11 +318,11 @@ pub trait KeyRotation {
 /// ```rust
 /// use pqc_iiot::crypto::traits::Metrics;
 /// use pqc_iiot::Kyber;
+/// use pqc_iiot::KyberSecurityLevel;
 ///
-/// let mut kem = Kyber::new(KyberSecurityLevel::Kyber768);
-/// // Perform some operations
-/// let metrics = kem.metrics();
-/// println!("Metrics: {:?}", metrics);
+/// let mut kem = Kyber::new_with_level(KyberSecurityLevel::Kyber768);
+/// // Perform some operations...
+/// let _metrics = kem.metrics(); // Type-erased; downcast if you need structured fields.
 /// kem.reset_metrics();
 /// ```
 pub trait Metrics {

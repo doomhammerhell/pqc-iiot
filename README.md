@@ -79,7 +79,7 @@ Select a profile based on your requirements:
 ### Basic Usage
 
 ```rust
-use pqc_iiot::crypto::profile::ProfileKyberFalcon;
+use pqc_iiot::crypto::profile::{CryptoProfileTrait, ProfileKyberFalcon};
 
 // Create a profile instance
 let profile = ProfileKyberFalcon::new();
@@ -106,20 +106,26 @@ assert!(valid);
 ### Performance Monitoring
 
 ```rust
-use pqc_iiot::crypto::profile::ProfileKyberFalcon;
+use pqc_iiot::crypto::traits::{Metrics, PqcKEM, PqcSignature};
+use pqc_iiot::{Falcon, Kyber};
 use std::time::Duration;
 
-// Create a profile with key rotation
-let mut profile = ProfileKyberFalcon::new()
-    .with_key_rotation_interval(Duration::from_secs(3600));
+// Configure key rotation on the concrete primitives (profiles are composition layers).
+let kyber = Kyber::new().with_key_rotation_interval(Duration::from_secs(3600));
+let falcon = Falcon::new();
 
 // Perform operations
-let (pk, sk) = profile.generate_keypair().unwrap();
-let (ct, ss) = profile.encapsulate(&pk).unwrap();
+let (pk, _sk) = kyber.generate_keypair().unwrap();
+let (_ct, _ss) = kyber.encapsulate(&pk).unwrap();
+
+let (sig_pk, sig_sk) = falcon.generate_keypair().unwrap();
+let msg = b"Hello, IIoT!";
+let sig = falcon.sign(&sig_sk, msg).unwrap();
+assert!(falcon.verify(&sig_pk, msg, &sig).unwrap());
 
 // Get performance metrics
-let metrics = profile.metrics();
-println!("Metrics: {:?}", metrics);
+let _ = kyber.metrics();
+let _ = falcon.metrics();
 ```
 
 ## Configuration

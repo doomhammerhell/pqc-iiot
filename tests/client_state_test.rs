@@ -2,6 +2,7 @@ use pqc_iiot::client_state::PqcClient;
 use pqc_iiot::security::provider::SoftwareSecurityProvider;
 use pqc_iiot::{Kyber, Falcon};
 use pqc_iiot::crypto::traits::{PqcKEM, PqcSignature};
+use pqc_iiot::provisioning::FactoryIdentity;
 
 #[test]
 fn test_client_state_machine_deep_flow() {
@@ -17,7 +18,11 @@ fn test_client_state_machine_deep_flow() {
     let client = PqcClient::new(provider);
     
     // 3. Provision (Generates Join Request, validates against "CA")
-    let _join_req = client.generate_join_request("device_serial_001").expect("Provisioning request failed");
+    let (factory_pk, factory_sk) = Falcon::new().generate_keypair().unwrap();
+    let factory_id = FactoryIdentity::new(factory_pk, factory_sk);
+    let _join_req = client
+        .generate_join_request(&factory_id, "device_serial_001")
+        .expect("Provisioning request failed");
     
     // Simulate CA Response (In a real test, verifying the signature of join_req would be good)
     let cert = b"OperationalCertificate_Trusted".to_vec();
@@ -26,12 +31,32 @@ fn test_client_state_machine_deep_flow() {
     // 4. Connect (Simulates 3-way KEM Handshake from the Network perspective)
     let (client_hello, ephemeral_sk) = client.generate_connect_request().expect("Connect request failed");
     
-    // Simulate Server: Encapsulate to Client's Ephemeral PK (ClientHello)
-    // The server would send back a Ciphertext (ServerHello) and derive the Shared Secret.
+    // Simulate Server: parse Hybrid ClientHello = [Kyber PK][X25519 PK]
+    // and reply with Hybrid ServerHello = [Kyber CT][X25519 PK].
     #[cfg(feature = "kyber")]
     let (server_hello, _server_shared_secret) = {
-         let kyber = Kyber::new();
-         kyber.encapsulate(&client_hello).expect("Server encapsulation failed")
+        let kyber = Kyber::new();
+        let kyber_pk_len = client_hello.len() - 32;
+        let client_k_pk = &client_hello[..kyber_pk_len];
+        let client_x_pk = &client_hello[kyber_pk_len..];
+
+        // Kyber encapsulation to client's ephemeral Kyber PK.
+        let (ct, ss) = kyber
+            .encapsulate(client_k_pk)
+            .expect("Server encapsulation failed");
+
+        // X25519 ECDH with client's ephemeral X25519 PK.
+        let mut client_x_pk_bytes = [0u8; 32];
+        client_x_pk_bytes.copy_from_slice(client_x_pk);
+
+        let server_x_sk = x25519_dalek::StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let server_x_pk = x25519_dalek::PublicKey::from(&server_x_sk).to_bytes();
+        let _x_secret = server_x_sk.diffie_hellman(&x25519_dalek::PublicKey::from(client_x_pk_bytes));
+
+        let mut server_hello = Vec::with_capacity(ct.len() + 32);
+        server_hello.extend_from_slice(&ct);
+        server_hello.extend_from_slice(&server_x_pk);
+        (server_hello, ss)
     };
     #[cfg(not(feature = "kyber"))]
     let (server_hello, _server_shared_secret) = (vec![], vec![]);

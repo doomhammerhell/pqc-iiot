@@ -79,10 +79,10 @@ fn main() -> Result<()> {
     let (pk, sk) = falcon.generate_keypair()?;
     
     let message = b"Hello, world!";
-    let signature = falcon.sign(message, &sk)?;
+    let signature = falcon.sign(&sk, message)?;
     
     // Verify the signature
-    falcon.verify(message, &signature, &pk)?;
+    assert!(falcon.verify(&pk, message, &signature)?);
     Ok(())
 }
 ```

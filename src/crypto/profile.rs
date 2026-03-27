@@ -8,7 +8,7 @@
 //! Basic usage:
 //!
 //! ```rust
-//! use pqc_iiot::crypto::profile::{CryptoProfile, ProfileKyberFalcon};
+//! use pqc_iiot::crypto::profile::{CryptoProfileTrait, ProfileKyberFalcon};
 //!
 //! // Create a profile instance
 //! let profile = ProfileKyberFalcon::new();
@@ -170,20 +170,44 @@ impl CryptoProfileTrait for ProfileKyberFalcon {
     }
 
     fn encapsulate(&self, pk: &[u8]) -> Result<(Vec<u8>, Vec<u8>), ProfileError> {
-        self.kem.encapsulate(pk).map_err(ProfileError::KemError)
+        // Profile public key is `[kyber_pk || falcon_pk]`.
+        const KYBER768_PK_LEN: usize = 1184;
+        if pk.len() < KYBER768_PK_LEN {
+            return Err(ProfileError::InvalidConfig);
+        }
+        let kem_pk = &pk[..KYBER768_PK_LEN];
+        self.kem.encapsulate(kem_pk).map_err(ProfileError::KemError)
     }
 
     fn decapsulate(&self, sk: &[u8], ct: &[u8]) -> Result<Vec<u8>, ProfileError> {
-        self.kem.decapsulate(sk, ct).map_err(ProfileError::KemError)
+        // Profile secret key is `[kyber_sk || falcon_sk]`.
+        const KYBER768_SK_LEN: usize = 2400;
+        if sk.len() < KYBER768_SK_LEN {
+            return Err(ProfileError::InvalidConfig);
+        }
+        let kem_sk = &sk[..KYBER768_SK_LEN];
+        self.kem.decapsulate(kem_sk, ct).map_err(ProfileError::KemError)
     }
 
     fn sign(&self, sk: &[u8], msg: &[u8]) -> Result<Vec<u8>, ProfileError> {
-        self.sign.sign(sk, msg).map_err(ProfileError::SignError)
+        const KYBER768_SK_LEN: usize = 2400;
+        const FALCON512_SK_LEN: usize = 1281;
+        if sk.len() < KYBER768_SK_LEN + FALCON512_SK_LEN {
+            return Err(ProfileError::InvalidConfig);
+        }
+        let sign_sk = &sk[KYBER768_SK_LEN..KYBER768_SK_LEN + FALCON512_SK_LEN];
+        self.sign.sign(sign_sk, msg).map_err(ProfileError::SignError)
     }
 
     fn verify(&self, pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<bool, ProfileError> {
+        const KYBER768_PK_LEN: usize = 1184;
+        const FALCON512_PK_LEN: usize = 897;
+        if pk.len() < KYBER768_PK_LEN + FALCON512_PK_LEN {
+            return Err(ProfileError::InvalidConfig);
+        }
+        let sign_pk = &pk[KYBER768_PK_LEN..KYBER768_PK_LEN + FALCON512_PK_LEN];
         self.sign
-            .verify(pk, msg, sig)
+            .verify(sign_pk, msg, sig)
             .map_err(ProfileError::SignError)
     }
 

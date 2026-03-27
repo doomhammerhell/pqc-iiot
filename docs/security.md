@@ -107,8 +107,8 @@ This document provides detailed information about the security features and cons
 1. **Generation**
    ```rust
    // Use recommended security levels
-   let kyber = Kyber::new(KyberSecurityLevel::Kyber768);
-   let falcon = Falcon::new(FalconSecurityLevel::Falcon512);
+   let kyber = Kyber::new_with_level(KyberSecurityLevel::Kyber768);
+   let falcon = Falcon::new_with_level(FalconSecurityLevel::Falcon512);
    ```
 
 2. **Storage**
@@ -127,10 +127,12 @@ This document provides detailed information about the security features and cons
 ### Protocol Usage
 1. **MQTT**
    ```rust
-   // Configure secure client
-   let client = SecureMqttClient::new("localhost", 1883, "client_id")?
-       .with_tls_config(tls_config)?
-       .with_acl(acl_rules)?;
+   // Strict mode requires provisioning (no TOFU):
+   // - pin `trust_anchor_ca_sig_pk`
+   // - install an `OperationalCertificate` for this identity
+   //
+   // See docs/mqtt.md for the end-to-end flow.
+   let _client = SecureMqttClient::new("localhost", 1883, "client_id")?;
    ```
 
 2. **CoAP**
