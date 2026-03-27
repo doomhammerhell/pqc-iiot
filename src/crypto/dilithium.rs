@@ -41,11 +41,18 @@ pub struct Dilithium {
 
 /// Metrics for Dilithium operations
 #[derive(Default)]
+#[allow(dead_code)]
 struct DilithiumMetrics {
     key_generation_time: core::time::Duration,
     signing_time: core::time::Duration,
     verification_time: core::time::Duration,
     operations_count: u64,
+}
+
+impl Default for Dilithium {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Dilithium {
@@ -69,6 +76,7 @@ impl Dilithium {
         }
     }
 
+    /// Set the key rotation interval.
     pub fn with_key_rotation_interval(mut self, interval: core::time::Duration) -> Self {
         self.key_rotation_interval = interval;
         self
@@ -100,7 +108,7 @@ impl PqcSignature for Dilithium {
     }
 
     fn sign(&self, sk: &[u8], msg: &[u8]) -> Result<Vec<u8>, Self::Error> {
-        let start = std::time::Instant::now();
+        let _start = std::time::Instant::now();
         // Need to construct SecretKey from bytes.
         // Assuming Keypair or SecretKey struct has from_bytes/from_slice.
         // pqc_dilithium likely uses `SecretKey::from_bytes`.
@@ -129,7 +137,7 @@ impl PqcSignature for Dilithium {
     }
 
     fn verify(&self, pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<bool, Self::Error> {
-        let start = std::time::Instant::now();
+        let _start = std::time::Instant::now();
         let result = match self.security_level {
             DilithiumSecurityLevel::Level2 => {
                 let pk = dilithium2::PublicKey::from_bytes(pk)

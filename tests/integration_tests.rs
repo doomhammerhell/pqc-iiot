@@ -675,28 +675,40 @@ fn test_key_announcement_binds_peer_id() -> Result<(), Box<dyn std::error::Error
     alice.bootstrap()?;
 
     // Sniff Alice's retained announcement and re-publish it as if it belonged to "bob_bind".
+    //
+    // `rumqttc::Client` requires its `Connection` event loop to be driven; if the connection is
+    // dropped, subsequent publishes fail with `Request(SendError(..))`. Keep the connection alive
+    // in a background thread until after we re-publish.
+    let alice_topic = format!("{}{}", key_prefix, &alice_id);
+    let bob_topic = format!("{}{}", key_prefix, &bob_bind_id);
+
     let mut opts = MqttOptions::new("sniffer", "localhost", port);
     opts.set_clean_session(true);
     let (mut sniff_client, mut sniff_conn) = RumqttClient::new(opts, 10);
-    sniff_client.subscribe(format!("{}{}", key_prefix, &alice_id), QoS::AtLeastOnce)?;
+    sniff_client.subscribe(alice_topic.clone(), QoS::AtLeastOnce)?;
 
-    let (tx_payload, rx_payload) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let (tx_payload, rx_payload) = std::sync::mpsc::channel::<Vec<u8>>();
+    let sniff_handle = std::thread::spawn(move || {
+        let mut sent = false;
         for notification in sniff_conn.iter() {
-            if let Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p))) = notification {
-                let _ = tx_payload.send(p.payload.to_vec());
-                break;
+            match notification {
+                Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p)))
+                    if !sent && p.topic == alice_topic =>
+                {
+                    let _ = tx_payload.send(p.payload.to_vec());
+                    sent = true;
+                }
+                Ok(_) => {}
+                Err(_) => break,
             }
         }
     });
 
     let alice_payload = rx_payload.recv_timeout(Duration::from_secs(2))?;
-    sniff_client.publish(
-        format!("{}{}", key_prefix, &bob_bind_id),
-        QoS::AtLeastOnce,
-        true,
-        alice_payload,
-    )?;
+    sniff_client.publish(bob_topic, QoS::AtLeastOnce, true, alice_payload)?;
+    sniff_client.disconnect()?;
+    drop(sniff_client);
+    sniff_handle.join().expect("sniffer thread panicked");
 
     // Victim should accept Alice but reject the re-bound "bob_bind" record.
     let start = Instant::now();

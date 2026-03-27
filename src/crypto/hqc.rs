@@ -51,6 +51,12 @@ struct HqcMetrics {
     operations_count: u64,
 }
 
+impl Default for Hqc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Hqc {
     /// Create a new HQC instance
     pub fn new() -> Self {

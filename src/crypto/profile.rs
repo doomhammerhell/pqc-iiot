@@ -250,6 +250,13 @@ impl ProfileSaberDilithium {
 }
 
 #[cfg(all(feature = "saber", feature = "dilithium"))]
+impl Default for ProfileSaberDilithium {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(all(feature = "saber", feature = "dilithium"))]
 impl CryptoProfileTrait for ProfileSaberDilithium {
     fn generate_keypair(&self) -> Result<(Vec<u8>, Vec<u8>), ProfileError> {
         let (kem_pk, kem_sk) = self
@@ -319,6 +326,13 @@ impl ProfileKyberDilithium {
             kem: crate::Kyber::new_with_level(crate::KyberSecurityLevel::Kyber768),
             sign: crate::Dilithium::new_with_level(crate::DilithiumSecurityLevel::Level3),
         }
+    }
+}
+
+#[cfg(all(feature = "kyber", feature = "dilithium"))]
+impl Default for ProfileKyberDilithium {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
