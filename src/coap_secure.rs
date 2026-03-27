@@ -145,9 +145,9 @@ impl SecureCoapClient {
     ) -> Result<CoapResponse> {
         // CRITICAL FIX: Reuse socket to prevent exhaustion
         if self.socket.is_none() {
-             let s = UdpSocket::bind("0.0.0.0:0").map_err(|e| Error::ClientError(e.to_string()))?;
-             s.set_read_timeout(Some(self.timeout)).ok();
-             self.socket = Some(s);
+            let s = UdpSocket::bind("0.0.0.0:0").map_err(|e| Error::ClientError(e.to_string()))?;
+            s.set_read_timeout(Some(self.timeout)).ok();
+            self.socket = Some(s);
         }
         let socket = self.socket.as_ref().unwrap();
 
@@ -199,12 +199,22 @@ impl SecureCoapClient {
     }
 
     /// Sends a POST request
-    pub fn post(&mut self, server: SocketAddr, resource: &str, payload: &[u8]) -> Result<CoapResponse> {
+    pub fn post(
+        &mut self,
+        server: SocketAddr,
+        resource: &str,
+        payload: &[u8],
+    ) -> Result<CoapResponse> {
         self.send_secure_request(RequestType::Post, server, resource, payload)
     }
 
     /// Sends a PUT request
-    pub fn put(&mut self, server: SocketAddr, resource: &str, payload: &[u8]) -> Result<CoapResponse> {
+    pub fn put(
+        &mut self,
+        server: SocketAddr,
+        resource: &str,
+        payload: &[u8],
+    ) -> Result<CoapResponse> {
         self.send_secure_request(RequestType::Put, server, resource, payload)
     }
 
@@ -219,7 +229,9 @@ impl SecureCoapClient {
     pub fn send_request(&mut self, _uri: &str, _payload: &[u8]) -> Result<CoapResponse> {
         // Implementation note: Full URI parsing is deferred to platform-specific PAL implementations
         // where advanced networking stacks are available.
-        Err(Error::ProtocolError("Deprecated: Use get/post with explicit SocketAddr".into()))
+        Err(Error::ProtocolError(
+            "Deprecated: Use get/post with explicit SocketAddr".into(),
+        ))
     }
     /// Verifies a received CoAP response
     pub fn verify_response(&self, response: &CoapResponse) -> Result<std::vec::Vec<u8>> {

@@ -1,10 +1,10 @@
-use sha2::{Sha256, Digest};
-use std::time::Instant;
+use rand_core::RngCore;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use rand_core::RngCore; // Needed for fill_bytes
+use std::time::Instant; // Needed for fill_bytes
 
 /// DoS Hardening: Client Puzzles (Proof-of-Work)
-/// 
+///
 /// Forces clients to burn CPU before the server allocates generic memory.
 /// Uses a Hashcash-style mechanism: H(seed || nonce) must have N leading zeros.
 
@@ -29,28 +29,32 @@ impl Puzzle {
     /// Nonce is typically an 8-byte value.
     pub fn verify(&self, nonce: &[u8]) -> bool {
         let mut hasher = Sha256::new();
-        hasher.update(&self.seed);
+        hasher.update(self.seed);
         hasher.update(nonce);
         let result = hasher.finalize();
-        
+
         // Check leading zeros
         // Simple implementation: check first N/8 bytes are 0
         // For difficulty=8, byte[0] == 0.
         // For difficulty=16, byte[0]==0 && byte[1]==0.
         // ... (can be more granular with bit checks)
-        
+
         let bytes_needed = (self.difficulty / 8) as usize;
         for i in 0..bytes_needed {
-            if result[i] != 0 { return false; }
+            if result[i] != 0 {
+                return false;
+            }
         }
-        
+
         // Check remaining bits
         let remaining_bits = self.difficulty % 8;
         if remaining_bits > 0 {
             let mask = 0xFF << (8 - remaining_bits);
-            if (result[bytes_needed] & mask) != 0 { return false; }
+            if (result[bytes_needed] & mask) != 0 {
+                return false;
+            }
         }
-        
+
         true
     }
 }
@@ -67,7 +71,7 @@ pub struct ConnectionThrottler {
 
 impl ConnectionThrottler {
     /// Create a new Token Bucket rate limiter.
-    /// 
+    ///
     /// * `capacity` - Max burst size.
     /// * `refill_rate` - Tokens added per second.
     pub fn new(capacity: u32, refill_rate: u32) -> Self {
@@ -90,14 +94,14 @@ impl ConnectionThrottler {
 
         let now = Instant::now();
         let (tokens, last_refill) = self.ips.entry(ip).or_insert((self.capacity, now));
-        
+
         // Refill
         let elapsed = now.duration_since(*last_refill).as_secs() as u32;
         if elapsed > 0 {
             *tokens = std::cmp::min(self.capacity, *tokens + elapsed * self.refill_rate_per_sec);
             *last_refill = now;
         }
-        
+
         if *tokens > 0 {
             *tokens -= 1;
             true

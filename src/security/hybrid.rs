@@ -24,6 +24,16 @@ pub fn encrypt(target_kem_pk: &[u8], target_x25519_pk: &[u8], plaintext: &[u8]) 
     encrypt_v1(target_kem_pk, target_x25519_pk, plaintext, &mut OsRng)
 }
 
+/// Encrypt a payload using hybrid KEM v1 (Kyber + X25519 + AES-256-GCM).
+///
+/// Security properties and invariants:
+/// - Confidentiality and integrity are provided by AES-256-GCM.
+/// - The AEAD key is derived from *both* the Kyber shared secret and the X25519 DH shared secret.
+/// - The packet header is authenticated as AAD to prevent substitution of KEM capsules / eph keys.
+///
+/// Operational constraints:
+/// - `target_x25519_pk` must be exactly 32 bytes.
+/// - `target_kem_pk` length determines Kyber parameter set (512/768/1024).
 pub fn encrypt_v1<R: RngCore + CryptoRng>(
     target_kem_pk: &[u8],
     target_x25519_pk: &[u8],
@@ -122,7 +132,11 @@ pub fn encrypt_v1<R: RngCore + CryptoRng>(
 /// - My Kyber Secret Key (`my_sk`) matches the public key used for encryption.
 ///   v1: `[1][suite][capsule_len:u16][capsule][x25519_eph_pk:32][nonce:12][ciphertext+tag]`
 ///   legacy: `[capsule_len:u16][capsule][nonce:12][ciphertext+tag]` (Kyber-only key)
-pub fn decrypt_with_exchange<F>(my_kem_sk: &[u8], packet: &[u8], x25519_exchange: F) -> Result<Vec<u8>>
+pub fn decrypt_with_exchange<F>(
+    my_kem_sk: &[u8],
+    packet: &[u8],
+    x25519_exchange: F,
+) -> Result<Vec<u8>>
 where
     F: FnOnce([u8; 32]) -> Result<[u8; 32]>,
 {
@@ -148,10 +162,16 @@ where
     let version = packet[0];
     let suite = packet[1];
     if version != 1 {
-        return Err(Error::CryptoError(format!("Unsupported packet version: {}", version)));
+        return Err(Error::CryptoError(format!(
+            "Unsupported packet version: {}",
+            version
+        )));
     }
     if suite != 1 {
-        return Err(Error::CryptoError(format!("Unsupported hybrid suite: {}", suite)));
+        return Err(Error::CryptoError(format!(
+            "Unsupported hybrid suite: {}",
+            suite
+        )));
     }
 
     let capsule_len = u16::from_be_bytes([packet[2], packet[3]]) as usize;
@@ -211,7 +231,13 @@ where
 
     let aad = &packet[..header_len];
     cipher
-        .decrypt(nonce, Payload { msg: ciphertext, aad })
+        .decrypt(
+            nonce,
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
         .map_err(|_| Error::CryptoError("AES-GCM decryption failed".into()))
 }
 

@@ -1,9 +1,9 @@
 //! HQC (Hamming Quasi-Cyclic) implementation - REAL
-//! 
+//!
 //! Using `pqcrypto-hqc` (Round 4) for code-based KEM.
 //! This provides a fallback if lattice-based crypto is broken.
 
-use crate::crypto::traits::{KeyRotation, Metrics, PqcKEM, SecurityLevel, CryptoError};
+use crate::crypto::traits::{CryptoError, KeyRotation, Metrics, PqcKEM, SecurityLevel};
 use crate::error::Error;
 use core::fmt;
 
@@ -11,7 +11,7 @@ use core::fmt;
 #[cfg(feature = "hqc")]
 use pqcrypto_hqc::hqc128;
 #[cfg(feature = "hqc")]
-use pqcrypto_traits::kem::{Ciphertext as _, PublicKey as _, SecretKey as _, SharedSecret as _}; 
+use pqcrypto_traits::kem::{Ciphertext as _, PublicKey as _, SecretKey as _, SharedSecret as _};
 
 /// HQC security levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,7 +61,7 @@ impl Hqc {
             metrics: HqcMetrics::default(),
         }
     }
-    
+
     /// Set the key rotation interval
     pub fn with_key_rotation_interval(mut self, interval: core::time::Duration) -> Self {
         self.key_rotation_interval = interval;
@@ -90,7 +90,7 @@ impl PqcKEM for Hqc {
     ) -> Result<(std::vec::Vec<u8>, std::vec::Vec<u8>), Self::Error> {
         let pk = hqc128::PublicKey::from_bytes(pk)
             .map_err(|e| Error::CryptoError(format!("Invalid HQC public key: {}", e)))?;
-            
+
         let (ct, ss) = hqc128::encapsulate(&pk);
         Ok((ct.as_bytes().to_vec(), ss.as_bytes().to_vec()))
     }
@@ -100,7 +100,7 @@ impl PqcKEM for Hqc {
         &self,
         _pk: &[u8],
     ) -> Result<(std::vec::Vec<u8>, std::vec::Vec<u8>), Self::Error> {
-         Err(Error::CryptoError("HQC feature disabled".into()))
+        Err(Error::CryptoError("HQC feature disabled".into()))
     }
 
     #[cfg(feature = "hqc")]
@@ -109,20 +109,20 @@ impl PqcKEM for Hqc {
             .map_err(|e| Error::CryptoError(format!("Invalid HQC secret key: {}", e)))?;
         let ct = hqc128::Ciphertext::from_bytes(ct)
             .map_err(|e| Error::CryptoError(format!("Invalid HQC ciphertext: {}", e)))?;
-            
+
         let ss = hqc128::decapsulate(&ct, &sk);
         Ok(ss.as_bytes().to_vec())
     }
 
     #[cfg(not(feature = "hqc"))]
     fn decapsulate(&self, _sk: &[u8], _ct: &[u8]) -> Result<std::vec::Vec<u8>, Self::Error> {
-         Err(Error::CryptoError("HQC feature disabled".into()))
+        Err(Error::CryptoError("HQC feature disabled".into()))
     }
 }
 
 impl SecurityLevel for Hqc {
     fn security_level(&self) -> u32 {
-        1 
+        1
     }
 
     fn set_security_level(&mut self, _level: u32) -> Result<(), CryptoError> {
@@ -145,6 +145,5 @@ impl Metrics for Hqc {
         &self.metrics
     }
 
-    fn reset_metrics(&mut self) {
-    }
+    fn reset_metrics(&mut self) {}
 }

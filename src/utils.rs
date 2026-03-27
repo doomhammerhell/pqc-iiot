@@ -25,12 +25,14 @@ where
     // Fill remaining capacity
     let remaining = buffer.capacity() - buffer.len();
     let mut chunk = [0u8; 32];
-    
+
     let mut to_fill = remaining;
     while to_fill > 0 {
         let chunk_size = core::cmp::min(to_fill, chunk.len());
         rng.fill_bytes(&mut chunk[..chunk_size]);
-        buffer.extend_from_slice(&chunk[..chunk_size]).map_err(|_| crate::Error::BufferTooSmall)?;
+        buffer
+            .extend_from_slice(&chunk[..chunk_size])
+            .map_err(|_| crate::Error::BufferTooSmall)?;
         to_fill -= chunk_size;
     }
     Ok(())

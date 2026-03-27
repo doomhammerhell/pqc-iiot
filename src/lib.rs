@@ -18,20 +18,20 @@ pub mod attestation {
     /// Remote Attestation Quotes
     pub mod quote;
 }
+/// Typestate Client Machine for enforcing secure state transitions.
+pub mod client_state;
 pub mod compliance;
-/// Industrial Provisioning Protocol (Join/Enrollment).
-pub mod provisioning; 
+pub mod error;
 /// Secure Firmware Over-The-Air (FOTA) updates.
 #[cfg(feature = "std")]
 pub mod fota;
-#[cfg(feature = "std")]
-pub mod persistence; 
-/// Cryptographic Ratcheting (Double Ratchet) for Forward Secrecy.
-pub mod ratchet; 
-/// Typestate Client Machine for enforcing secure state transitions.
-pub mod client_state;
-pub mod error;
 pub mod kem;
+#[cfg(feature = "std")]
+pub mod persistence;
+/// Industrial Provisioning Protocol (Join/Enrollment).
+pub mod provisioning;
+/// Cryptographic Ratcheting (Double Ratchet) for Forward Secrecy.
+pub mod ratchet;
 /// Security primitives and providers
 pub mod security;
 pub mod sign;

@@ -61,29 +61,37 @@ fn is_valid_memory_range(_start: *const u8, _len: usize) -> bool {
 
         // Check Text Segment
         if start_addr >= text_start && end_addr <= text_end {
-             return true;
+            return true;
         }
         // Check Data Segment
         if start_addr >= data_start && end_addr <= data_end {
-             return true;
+            return true;
         }
         false
     }
 }
 
 /// Verify integrity of a memory region (Code/Data)
-/// 
+///
 /// # Safety
 /// This function is unsafe because it reads arbitrary memory ranges.
-/// The caller must ensure the range is valid. 
+/// The caller must ensure the range is valid.
 /// **UPDATE**: We now validate against linker symbols internally as an extra guard.
-pub unsafe fn verify_memory_integrity(start: *const u8, len: usize, expected_hash: &[u8]) -> Result<()> {
+pub unsafe fn verify_memory_integrity(
+    start: *const u8,
+    len: usize,
+    expected_hash: &[u8],
+) -> Result<()> {
     if !is_valid_memory_range(start, len) {
-        return Err(Error::ComplianceError("Memory Integrity Check Failed: Invalid Memory Range".into()));
+        return Err(Error::ComplianceError(
+            "Memory Integrity Check Failed: Invalid Memory Range".into(),
+        ));
     }
 
     if len == 0 {
-        return Err(Error::ComplianceError("Zero length memory range".to_string()));
+        return Err(Error::ComplianceError(
+            "Zero length memory range".to_string(),
+        ));
     }
 
     let mut hasher = Sha256::new();
@@ -92,14 +100,17 @@ pub unsafe fn verify_memory_integrity(start: *const u8, len: usize, expected_has
     // Verify that the memory segment is mapped and readable for integrity hashing.
     let slice = core::slice::from_raw_parts(start, len);
     hasher.update(slice);
-    
+
     let result = hasher.finalize();
 
     if result.as_slice() != expected_hash {
-        error!("[COMPLIANCE] Integrity Check FAILED. Calculated: {:x?}, Expected: {:x?}", result, expected_hash);
+        error!(
+            "[COMPLIANCE] Integrity Check FAILED. Calculated: {:x?}, Expected: {:x?}",
+            result, expected_hash
+        );
         return Err(Error::ComplianceError("Integrity Check Failed".to_string()));
     }
-    
+
     info!("[COMPLIANCE] Memory Integrity Verified.");
     Ok(())
 }
@@ -110,10 +121,8 @@ fn test_integrity() -> Result<()> {
     let data = b"pqc-iiot-integrity-check";
     let expected = hex::decode("1adef1ac56909d3e5320799507ee1c75f01788450cbd5e56f7341135660423f9")
         .map_err(|_| Error::ComplianceError("Hex decode failed".to_string()))?;
-        
-    unsafe {
-        verify_memory_integrity(data.as_ptr(), data.len(), &expected)
-    }
+
+    unsafe { verify_memory_integrity(data.as_ptr(), data.len(), &expected) }
 }
 
 /// AES-256-GCM Known Answer Test (KAT)
