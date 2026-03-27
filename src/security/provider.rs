@@ -169,8 +169,10 @@ impl SecurityProvider for SoftwareSecurityProvider {
     }
 
     fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
-        // Use the hybrid module to handle the full [Capsule][Nonce][Ciphertext] structure
-        crate::security::hybrid::decrypt(&self.kyber_sk, ciphertext)
+        // Hybrid decrypt (v1 Kyber+X25519; legacy Kyber-only supported for transition).
+        crate::security::hybrid::decrypt_with_exchange(&self.kyber_sk, ciphertext, |peer_pk| {
+            self.x25519_exchange(peer_pk)
+        })
     }
 
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>> {

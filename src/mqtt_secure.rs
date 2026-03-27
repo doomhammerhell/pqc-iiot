@@ -759,8 +759,9 @@ impl SecureMqttClient {
         attached_payload.extend_from_slice(&self.sequence_number.to_be_bytes());
         attached_payload.extend_from_slice(payload);
 
-        // 3. Hybrid Encrypt
-        let encrypted_blob = hybrid::encrypt(&target_keys.kem_pk, &attached_payload)?;
+        // 3. Hybrid Encrypt (Kyber + X25519 -> AEAD)
+        let encrypted_blob =
+            hybrid::encrypt(&target_keys.kem_pk, &target_keys.x25519_pk, &attached_payload)?;
 
         // 4. Sign the encrypted blob
         let signature = self.provider.sign(&encrypted_blob)?;
