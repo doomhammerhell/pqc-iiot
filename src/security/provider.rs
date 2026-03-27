@@ -242,11 +242,19 @@ impl SecurityProvider for SoftwareSecurityProvider {
     }
 
     fn generate_quote(&self, _pcr_indices: &[u32], nonce: &[u8]) -> Result<crate::attestation::quote::AttestationQuote> {
-        // Software provider uses empty PCRs (all zeros) for the demo snapshot
+        // Software provider uses empty PCRs (all zeros) for the demo snapshot.
+        // We still sign the quote to keep the verification chain functional.
+        use sha2::{Sha256, Digest};
+        let pcr_digest = vec![0u8; 32];
+        let mut hasher = Sha256::new();
+        hasher.update(&pcr_digest);
+        hasher.update(nonce);
+        let digest = hasher.finalize();
+        let signature = self.sign(digest.as_slice())?;
         Ok(crate::attestation::quote::AttestationQuote {
-            pcr_digest: vec![0u8; 32],
+            pcr_digest,
             nonce: nonce.to_vec(),
-            signature: vec![], // In a real system, would be signed by AK
+            signature,
             ak_public_key: self.falcon_pk.clone(),
         })
     }

@@ -108,6 +108,20 @@ struct OwnKeys {
     sequence_number: u64,
 }
 
+#[derive(Serialize, Deserialize)]
+struct AttestationChallenge {
+    verifier_id: String,
+    #[serde(with = "crate::security::keystore::base64_serde")]
+    nonce: Vec<u8>,
+    ts: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AttestationQuoteMessage {
+    subject_id: String,
+    quote: crate::attestation::quote::AttestationQuote,
+}
+
 /// Canonical payload used for signing/verifying key announcements.
 /// Excludes the detached signature field to avoid recursion.
 fn key_announcement_payload(peer_id: &str, keys: &PeerKeys) -> Vec<u8> {
@@ -942,6 +956,26 @@ impl SecureMqttClient {
                 return Ok(None);
             }
 
+            // 1.1 Attestation challenge (directed to this subject)
+            if let Some(target_id) = topic.strip_prefix(&self.attest_challenge_prefix) {
+                if target_id == self.client_id {
+                    let challenge: AttestationChallenge = serde_json::from_slice(&payload)
+                        .map_err(|e| Error::ClientError(format!("Invalid attestation challenge: {}", e)))?;
+                    self.handle_attestation_challenge(challenge)?;
+                }
+                return Ok(None);
+            }
+
+            // 1.2 Attestation quote (directed to this verifier)
+            if let Some(verifier_id) = topic.strip_prefix(&self.attest_quote_prefix) {
+                if verifier_id == self.client_id {
+                    let msg: AttestationQuoteMessage = serde_json::from_slice(&payload)
+                        .map_err(|e| Error::ClientError(format!("Invalid attestation quote msg: {}", e)))?;
+                    self.handle_attestation_quote(msg)?;
+                }
+                return Ok(None);
+            }
+
             // 2. Check Encrypted Packet (SenderID prefixed)
             if payload.len() > 2 {
                 let (len_bytes, _) = payload.split_at(2);
@@ -1020,34 +1054,123 @@ impl SecureMqttClient {
         Ok(None)
     }
 
-    /// Handle Key Exchange messages (Identity Verification)
-    fn handle_key_exchange(&mut self, sender_id: &str, mut keys: PeerKeys) -> Result<()> {
-        // STRICT MODE CHECK
-        if self.strict_mode {
-            // Must be known AND trusted
-            let existing = self.keystore.get(sender_id);
-            let is_trusted = existing.map(|k| k.is_trusted).unwrap_or(false);
+    fn send_attestation_challenge(&mut self, peer_id: &str) -> Result<()> {
+        if self.pending_attestation.contains_key(peer_id) {
+            return Ok(());
+        }
+        let mut nonce = vec![0u8; 32];
+        rand_core::OsRng.fill_bytes(&mut nonce);
+        self.pending_attestation
+            .insert(peer_id.to_string(), nonce.clone());
 
-            if !is_trusted {
-                warn!("Strict Mode: Rejecting unknown peer {}", sender_id);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let challenge = AttestationChallenge {
+            verifier_id: self.client_id.clone(),
+            nonce,
+            ts: now,
+        };
+        let payload = serde_json::to_vec(&challenge)
+            .map_err(|e| Error::ClientError(format!("Challenge JSON error: {}", e)))?;
+        let topic = format!("{}{}", self.attest_challenge_prefix, peer_id);
+
+        if let Some(client) = &mut self.client {
+            client
+                .publish(topic, QoS::AtLeastOnce, false, payload)
+                .map_err(|e| Error::MqttError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn handle_attestation_challenge(&mut self, challenge: AttestationChallenge) -> Result<()> {
+        // Generate quote bound to challenger nonce.
+        let quote = self
+            .provider
+            .generate_quote(&[0, 1, 2, 3], &challenge.nonce)?;
+
+        let msg = AttestationQuoteMessage {
+            subject_id: self.client_id.clone(),
+            quote,
+        };
+        let payload = serde_json::to_vec(&msg)
+            .map_err(|e| Error::ClientError(format!("Quote JSON error: {}", e)))?;
+
+        let topic = format!("{}{}", self.attest_quote_prefix, challenge.verifier_id);
+        if let Some(client) = &mut self.client {
+            client
+                .publish(topic, QoS::AtLeastOnce, false, payload)
+                .map_err(|e| Error::MqttError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn handle_attestation_quote(&mut self, msg: AttestationQuoteMessage) -> Result<()> {
+        let expected_nonce = match self.pending_attestation.get(&msg.subject_id) {
+            Some(n) => n.clone(),
+            None => {
+                warn!(
+                    "Ignoring attestation quote from {}: no pending challenge",
+                    msg.subject_id
+                );
                 return Ok(());
             }
+        };
 
-            // Verify Identity Key matches the Pre-Approved one!
-            if let Some(known) = existing {
-                if !known.sig_pk.is_empty() && known.sig_pk != keys.sig_pk {
-                    error!("SECURITY ALERT: Peer {} presented different Identity Key!", sender_id);
-                    let event = SecurityEvent::IdentityRotation {
-                        new_key_id: "mismatch_with_trust".to_string(),
-                    };
-                    self.audit_logger.log(AuditLog::new(event, Severity::Critical, "SecureMqttClient"));
-                    self.metrics.inc_failed_handshake();
-                    return Ok(()); // Reject
-                }
+        let peer_keys = match self.keystore.get(&msg.subject_id) {
+            Some(k) => k.clone(),
+            None => {
+                warn!(
+                    "Ignoring attestation quote from {}: unknown peer",
+                    msg.subject_id
+                );
+                return Ok(());
             }
+        };
+
+        // Bind quote AK to certified identity (simplified: AK == identity key).
+        if msg.quote.ak_public_key != peer_keys.sig_pk {
+            warn!(
+                "Attestation quote rejected for {}: AK does not match certified sig_pk",
+                msg.subject_id
+            );
+            return Ok(());
         }
 
-        // VERIFY ANNOUNCEMENT SIGNATURE (required)
+        if let Err(e) = msg
+            .quote
+            .verify(&expected_nonce, &self.expected_pcr_digest)
+        {
+            warn!(
+                "Attestation quote rejected for {}: {}",
+                msg.subject_id, e
+            );
+            return Ok(());
+        }
+
+        // Mark peer trusted and persist.
+        if let Some(k) = self.keystore.get_mut(&msg.subject_id) {
+            k.is_trusted = true;
+            k.quote = Some(msg.quote.clone());
+        }
+        self.pending_attestation.remove(&msg.subject_id);
+
+        self.persist_manager.mark_dirty();
+        if self.persist_manager.should_flush() {
+            let keystore_path = self
+                .data_dir
+                .join(format!("keystore_{}.json", self.client_id));
+            let _ = self.keystore.save_to_file(keystore_path.to_str().unwrap_or(""));
+            self.persist_manager.notify_flushed();
+        }
+
+        Ok(())
+    }
+
+    /// Handle Key Exchange messages (Identity Verification)
+    fn handle_key_exchange(&mut self, sender_id: &str, mut keys: PeerKeys) -> Result<()> {
+        // Detached signature is mandatory (older clients are rejected).
         let signature = match &keys.key_signature {
             Some(sig) => sig,
             None => {
@@ -1219,6 +1342,15 @@ impl SecureMqttClient {
         keys.is_trusted = !needs_attestation;
 
         self.keystore.insert(sender_id, keys);
+
+        if needs_attestation {
+            if let Err(e) = self.send_attestation_challenge(sender_id) {
+                warn!(
+                    "Failed to send attestation challenge to {}: {}",
+                    sender_id, e
+                );
+            }
+        }
         
         // Lazy Persistence
         self.persist_manager.mark_dirty();
