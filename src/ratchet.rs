@@ -10,7 +10,7 @@ use sha2::Sha256;
 use hkdf::Hkdf;
 use rand_core::{RngCore, OsRng};
 use aes_gcm::{Aes256Gcm, KeyInit};
-use aes_gcm::aead::Aead;
+use aes_gcm::aead::{Aead, Payload};
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap; // Requires std for now. For no-std, use hashbrown or similar.
 
@@ -77,7 +77,7 @@ pub struct RatchetMessage {
 impl RatchetSession {
     /// Initialize a new session with a pre-shared secret (e.g., from initial Handshake).
     pub fn initialize(initial_rk: [u8; 32], peer_pk: Option<&[u8]>) -> Self {
-        Self {
+        let mut s = Self {
             root_key: initial_rk,
             chain_key_send: initial_rk, 
             chain_key_recv: initial_rk, 
@@ -86,7 +86,10 @@ impl RatchetSession {
             msg_num_send: 0,
             msg_num_recv: 0,
             skipped_message_keys: HashMap::new(),
-        }
+        };
+        // Pre-generate KEM keypair when available to avoid dead code paths.
+        let _ = s.initiate_kem_ratchet();
+        s
     }
 
     /// Step 1: Symmetric Ratchet (KDF) using RFC 5869 HKDF
@@ -122,6 +125,35 @@ impl RatchetSession {
         hkdf.expand(b"ChainKey", &mut new_ck).map_err(|_| Error::CryptoError("HKDF CK fail".into()))?;
         
         Ok((new_rk, new_ck))
+    }
+
+    /// Generate a fresh KEM keypair for the next ratchet step and return the public key to share with the peer.
+    pub fn initiate_kem_ratchet(&mut self) -> Result<Vec<u8>> {
+        #[cfg(feature = "kyber")]
+        {
+            let kyber = Kyber::new();
+            let (pk, sk) = kyber
+                .generate_keypair()
+                .map_err(|e| Error::CryptoError(format!("Ratchet keygen failed: {:?}", e)))?;
+            self.my_keypair = Some((pk.clone(), sk));
+            return Ok(pk);
+        }
+        #[cfg(not(feature = "kyber"))]
+        {
+            Err(Error::CryptoError(
+                "KEM ratchet unavailable (kyber feature disabled)".into(),
+            ))
+        }
+    }
+
+    /// Update the peer's public key (typically after receiving a ratchet-init message).
+    pub fn set_peer_pubkey(&mut self, peer_pk: Vec<u8>) {
+        self.peer_pubkey = Some(peer_pk);
+    }
+
+    /// Get our current public key (for sharing with the peer).
+    pub fn my_pubkey(&self) -> Option<&[u8]> {
+        self.my_keypair.as_ref().map(|(pk, _)| pk.as_slice())
     }
 
     /// Perform a KEM Ratchet Step (Refresh Root Key)
@@ -176,6 +208,12 @@ impl RatchetSession {
         self.chain_key_send = next_ck;
         let msg_num = self.msg_num_send;
         self.msg_num_send += 1;
+        let header = RatchetHeader {
+            compressed_pubkey: None, 
+            msg_num,
+            previous_chain_len: 0,
+        };
+        let aad = header_aad(&header);
         
         // 2. Encrypt with MK (AES-256-GCM)
         let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&mk);
@@ -185,7 +223,10 @@ impl RatchetSession {
         OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = aes_gcm::Nonce::from_slice(&nonce_bytes);
         
-        let ciphertext = cipher.encrypt(nonce, plaintext)
+        let ciphertext = cipher.encrypt(
+                nonce, 
+                Payload { msg: plaintext, aad: &aad }
+            )
              .map_err(|_| Error::CryptoError("Encryption Failed".into()))?;
              
         // Prepend Nonce to ciphertext
@@ -194,11 +235,7 @@ impl RatchetSession {
         final_ciphertext.extend_from_slice(&ciphertext);
         
         Ok(RatchetMessage {
-            header: RatchetHeader {
-                compressed_pubkey: None, 
-                msg_num,
-                previous_chain_len: 0,
-            },
+            header,
             ciphertext: final_ciphertext, 
             auth_tag: vec![], // Tag is inside AES-GCM ciphertext usually
         })
@@ -209,7 +246,7 @@ impl RatchetSession {
     pub fn decrypt(&mut self, msg: &RatchetMessage) -> Result<Vec<u8>> {
         // Check if message is in skipped keys
         if let Some(mk) = self.skipped_message_keys.remove(&msg.header.msg_num) {
-            return self.decrypt_with_mk(&mk, &msg.ciphertext);
+            return self.decrypt_with_mk(&msg.header, &mk, &msg.ciphertext);
         }
         
         // Check window
@@ -233,21 +270,25 @@ impl RatchetSession {
         self.chain_key_recv = next_ck;
         self.msg_num_recv += 1;
         
-        self.decrypt_with_mk(&mk, &msg.ciphertext)
+        self.decrypt_with_mk(&msg.header, &mk, &msg.ciphertext)
     }
     
-    fn decrypt_with_mk(&self, mk: &[u8; 32], ciphertext_full: &[u8]) -> Result<Vec<u8>> {
+    fn decrypt_with_mk(&self, header: &RatchetHeader, mk: &[u8; 32], ciphertext_full: &[u8]) -> Result<Vec<u8>> {
         if ciphertext_full.len() < 12 {
             return Err(Error::CryptoError("Ciphertext too short".into()));
         }
         
         let key = aes_gcm::Key::<Aes256Gcm>::from_slice(mk);
         let cipher = Aes256Gcm::new(key);
+        let aad = header_aad(header);
         
         let nonce = aes_gcm::Nonce::from_slice(&ciphertext_full[0..12]);
         let actual_ciphertext = &ciphertext_full[12..];
         
-        cipher.decrypt(nonce, actual_ciphertext)
+        cipher.decrypt(
+                nonce, 
+                Payload { msg: actual_ciphertext, aad: &aad }
+            )
              .map_err(|_| Error::CryptoError("Decryption Failed".into()))
     }
 
@@ -268,6 +309,20 @@ impl RatchetSession {
         Err(Error::CryptoError("Peer PubKey unknown".into()))
     }
     }
+
+/// Build AAD for ratchet messages to bind header integrity.
+fn header_aad(header: &RatchetHeader) -> Vec<u8> {
+    let mut aad = Vec::new();
+    aad.extend_from_slice(&header.msg_num.to_be_bytes());
+    aad.extend_from_slice(&header.previous_chain_len.to_be_bytes());
+    if let Some(pk) = &header.compressed_pubkey {
+        aad.extend_from_slice(&(pk.len() as u32).to_be_bytes());
+        aad.extend_from_slice(pk);
+    } else {
+        aad.extend_from_slice(&0u32.to_be_bytes());
+    }
+    aad
+}
 
 
 // CRITICAL SECURITY FIX: Zeroize keys on drop

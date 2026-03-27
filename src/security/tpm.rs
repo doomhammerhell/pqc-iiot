@@ -312,7 +312,7 @@ impl SecurityProvider for SoftwareTpm {
             .map_err(|e| Error::CryptoError(format!("TPM Decrypt Fail: {:?}", e)))
     }
 
-    fn export_secret_keys(&self) -> Option<(Vec<u8>, Vec<u8>)> {
+    fn export_secret_keys(&self) -> Option<crate::security::provider::ExportedIdentitySecrets> {
         // TPM keys are non-exportable by design.
         None
     }
@@ -348,4 +348,3 @@ impl SecurityProvider for SoftwareTpm {
     }
 }
 // Drop is likely not needed or let ZeroizeOnDrop handle TpmState
-

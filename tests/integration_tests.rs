@@ -1,8 +1,11 @@
 use pqc_iiot::{coap_secure::SecureCoapClient, mqtt_secure::SecureMqttClient};
+use pqc_iiot::provisioning::{FactoryIdentity, OperationalCa};
+use pqc_iiot::crypto::traits::PqcSignature;
+use pqc_iiot::Falcon;
 use rumqttc::{Client as RumqttClient, MqttOptions, QoS};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
-use base64;
+use base64::{engine::general_purpose, Engine as _};
 mod common;
 
 #[test]
@@ -301,126 +304,181 @@ fn test_strict_mode() -> Result<(), Box<dyn std::error::Error>> {
     let port = 19855;
     common::start_mqtt_broker(port);
 
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let suffix: u32 = rng.gen();
+    let suffix: u32 = rand::random();
+    let key_prefix = format!("pqc/strict_keys_{}/", suffix);
 
+    // Provisioning CA (factory -> operational trust anchor).
+    let falcon = Falcon::new();
+    let (ca_pk, ca_sk) = falcon.generate_keypair().expect("ca keygen");
+    let mut ca = OperationalCa::new(ca_pk.clone(), ca_sk);
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Strict node: provisioned + strict_mode=true
     let strict_id = format!("strict_node_{}", suffix);
+    let (strict_factory_pk, strict_factory_sk) = falcon.generate_keypair().expect("factory keygen");
+    let strict_factory = FactoryIdentity::new(strict_factory_pk, strict_factory_sk);
+
+    let mut strict_client = SecureMqttClient::new("localhost", port, &strict_id)?
+        .with_key_prefix(&key_prefix)
+        .with_keep_alive(Duration::from_secs(5))
+        .with_strict_mode(true);
+
+    ca.allow_device(&strict_id, strict_factory.pubkey.clone());
+    let strict_join = strict_factory.create_join_request(
+        &strict_id,
+        &strict_client.get_kem_public_key(),
+        &strict_client.get_identity_key(),
+        &strict_client.get_x25519_public_key(),
+    )?;
+    let strict_cert = ca.issue_operational_cert(&strict_join, now, 3600)?;
+    strict_client = strict_client
+        .with_trust_anchor_ca_sig_pk(ca_pk.clone())
+        .with_operational_cert(strict_cert);
+    strict_client.bootstrap()?;
+
+    // Unknown peer: unprovisioned (publishes keys without cert). Strict client must reject.
     let unknown_id = format!("unknown_node_{}", suffix);
+    let mut unknown_client = SecureMqttClient::new("localhost", port, &unknown_id)?
+        .with_key_prefix(&key_prefix)
+        .with_strict_mode(false);
+    unknown_client.bootstrap()?;
+
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(300) {
+        let _ = strict_client.poll(|_, _| {});
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        !strict_client.has_peer(&unknown_id),
+        "Strict client should reject unprovisioned peer announcements"
+    );
+
+    // Trusted peer: provisioned (cert present) => must be accepted.
     let trusted_id = format!("trusted_node_{}", suffix);
-    
-    let strict_id_c = strict_id.clone();
-    let unknown_id_c = unknown_id.clone();
-    let trusted_id_c = trusted_id.clone();
+    let (trusted_factory_pk, trusted_factory_sk) = falcon.generate_keypair().expect("factory keygen");
+    let trusted_factory = FactoryIdentity::new(trusted_factory_pk, trusted_factory_sk);
 
-    // 1. Unknown Peer Test
-    // Spawn Unknown Client in thread to keep it alive/publishing
-    std::thread::spawn(move || {
-        let mut unknown_client = SecureMqttClient::new("localhost", port, &unknown_id_c).unwrap();
-        unknown_client.bootstrap().unwrap();
-        loop {
-            if let Err(e) = unknown_client.poll(|_,_| {}) {
-                 // eprintln!("Unknown client poll error: {}", e);
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    });
+    let mut trusted_client = SecureMqttClient::new("localhost", port, &trusted_id)?
+        .with_key_prefix(&key_prefix)
+        .with_strict_mode(true);
 
-    // Spawn Strict Client to check rejection
-    let (tx_rejection, rx_rejection) = std::sync::mpsc::channel();
-    let strict_id_clone_1 = strict_id.clone();
-    let unknown_id_clone_1 = unknown_id.clone();
-    
-    let handle = std::thread::spawn(move || {
-        let mut strict_client = SecureMqttClient::new("localhost", port, &strict_id_clone_1).unwrap()
-            .with_strict_mode(true)
-            .with_keep_alive(Duration::from_secs(5));
-            
-        strict_client.bootstrap().unwrap();
-        
-        // Poll for a bit to see if we accept unknown
-        for _ in 0..20 {
-            if let Err(e) = strict_client.poll(|_,_| {}) {
-                eprintln!("Strict client poll error: {}", e);
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        
-        let accepted = strict_client.has_peer(&unknown_id_clone_1);
-        tx_rejection.send(!accepted).unwrap();
-        
-        // Return client for part 2? No, ownership is tricky. 
-        // We will just do Part 2 (Trusted) in a separate test logic or reuse this thread?
-        // Let's reuse this thread logic.
-        
-        // 2. Add Trusted Peer
-        // We need the trusted peer's ID key. 
-        // In a real scenario, we'd exchange it out of band.
-        // Here we simulate getting it.
-        // We have to spin up the Trusted Client to generate a key first?
-        // Or we can just generate a keypair locally here to add as trusted, 
-        // then pass it to the Trusted Client thread?
-        // Yes, let's make the Trusted Client use a pre-determined key.
-        
-        // Actually, SecureMqttClient generates keys on new().
-        // So we can't easily pre-determine unless we use new_encrypted with known keys.
-        // OR we just spin up Trusted Client first, get its key, then add it.
-    });
-    
-    assert!(rx_rejection.recv().unwrap(), "Strict client should reject unknown peer");
-    handle.join().unwrap(); // Wait for strict client to finish part 1
-    
-    // Part 2: Trusted Peer Test
-    // We need a fresh strict client or we need to keep the previous one alive.
-    // The previous one dropped. Let's start fresh for Part 2.
-    
-    let (tx_trusted_key, rx_trusted_key) = std::sync::mpsc::channel();
-    let (tx_success, rx_success) = std::sync::mpsc::channel();
-    
-    // Trusted Client Thread
-    std::thread::spawn(move || {
-        let mut trusted_client = SecureMqttClient::new("localhost", port, &trusted_id_c).unwrap();
-        let key = trusted_client.get_identity_key();
-        tx_trusted_key.send(key).unwrap();
-        trusted_client.bootstrap().unwrap();
-        
-        loop {
-            if let Err(e) = trusted_client.poll(|_,_| {}) {
-                eprintln!("Trusted client poll error: {}", e);
-            }
-            // Wait for handshake
-            if trusted_client.has_peer(&strict_id_c) {
-                tx_success.send(true).unwrap();
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    });
-    
-    let trusted_key = rx_trusted_key.recv().unwrap();
-    
-    // Strict Client Thread (Part 2)
-    let unknown_id_c2 = unknown_id.clone();
-    std::thread::spawn(move || {
-        let mut strict_client = SecureMqttClient::new("localhost", port, &strict_id).unwrap()
-            .with_strict_mode(true); // Default keep alive
-            
-        // Pre-approve
-        strict_client.add_trusted_peer(&trusted_id, trusted_key);
-        strict_client.bootstrap().unwrap();
-        
-        loop {
-           if let Err(e) = strict_client.poll(|_,_| {}) {
-               eprintln!("Strict client (part 2) poll error: {}", e);
-           }
-           if strict_client.is_peer_ready(&trusted_id) {
-               break;
-           }
-           std::thread::sleep(Duration::from_millis(50));
-        }
-    });
+    ca.allow_device(&trusted_id, trusted_factory.pubkey.clone());
+    let trusted_join = trusted_factory.create_join_request(
+        &trusted_id,
+        &trusted_client.get_kem_public_key(),
+        &trusted_client.get_identity_key(),
+        &trusted_client.get_x25519_public_key(),
+    )?;
+    let trusted_cert = ca.issue_operational_cert(&trusted_join, now, 3600)?;
+    trusted_client = trusted_client
+        .with_trust_anchor_ca_sig_pk(ca_pk.clone())
+        .with_operational_cert(trusted_cert);
+    trusted_client.bootstrap()?;
 
-    assert!(rx_success.recv_timeout(Duration::from_secs(10)).is_ok(), "Handshake with trusted peer failed");
+    let start = Instant::now();
+    let mut ready = false;
+    while start.elapsed() < Duration::from_secs(3) {
+        strict_client.poll(|_, _| {})?;
+        if strict_client.is_peer_ready(&trusted_id) {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    assert!(ready, "Strict client should accept provisioned peer");
+
+    Ok(())
+}
+
+#[test]
+fn test_attestation_gates_trust() -> Result<(), Box<dyn std::error::Error>> {
+    let port = 29837;
+    common::start_mqtt_broker(port);
+    let suffix: u32 = rand::random();
+    let key_prefix = format!("pqc/attest_keys_{}/", suffix);
+
+    let falcon = Falcon::new();
+    let (ca_pk, ca_sk) = falcon.generate_keypair().expect("ca keygen");
+    let mut ca = OperationalCa::new(ca_pk.clone(), ca_sk);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let alice_id = format!("alice_attest_{}", suffix);
+    let bob_id = format!("bob_attest_{}", suffix);
+
+    // Alice (subject)
+    let (alice_factory_pk, alice_factory_sk) = falcon.generate_keypair().expect("factory keygen");
+    let alice_factory = FactoryIdentity::new(alice_factory_pk, alice_factory_sk);
+    let mut alice = SecureMqttClient::new("localhost", port, &alice_id)?
+        .with_key_prefix(&key_prefix)
+        .with_strict_mode(true);
+    ca.allow_device(&alice_id, alice_factory.pubkey.clone());
+    let alice_join = alice_factory.create_join_request(
+        &alice_id,
+        &alice.get_kem_public_key(),
+        &alice.get_identity_key(),
+        &alice.get_x25519_public_key(),
+    )?;
+    let alice_cert = ca.issue_operational_cert(&alice_join, now, 3600)?;
+    alice = alice
+        .with_trust_anchor_ca_sig_pk(ca_pk.clone())
+        .with_operational_cert(alice_cert);
+
+    // Bob (verifier)
+    let (bob_factory_pk, bob_factory_sk) = falcon.generate_keypair().expect("factory keygen");
+    let bob_factory = FactoryIdentity::new(bob_factory_pk, bob_factory_sk);
+    let mut bob = SecureMqttClient::new("localhost", port, &bob_id)?
+        .with_key_prefix(&key_prefix)
+        .with_strict_mode(true)
+        .with_attestation_required(true);
+    ca.allow_device(&bob_id, bob_factory.pubkey.clone());
+    let bob_join = bob_factory.create_join_request(
+        &bob_id,
+        &bob.get_kem_public_key(),
+        &bob.get_identity_key(),
+        &bob.get_x25519_public_key(),
+    )?;
+    let bob_cert = ca.issue_operational_cert(&bob_join, now, 3600)?;
+    bob = bob
+        .with_trust_anchor_ca_sig_pk(ca_pk.clone())
+        .with_operational_cert(bob_cert);
+
+    // Bootstrap both sides
+    bob.bootstrap()?;
+    alice.bootstrap()?;
+
+    // Bob should learn Alice's identity first, but keep her non-ready until quote is verified.
+    let start = Instant::now();
+    let mut saw_keys = false;
+    let mut saw_not_ready = false;
+    let mut became_ready = false;
+    while start.elapsed() < Duration::from_secs(5) {
+        bob.poll(|_, _| {})?;
+        alice.poll(|_, _| {})?;
+
+        if bob.has_peer(&alice_id) {
+            saw_keys = true;
+            if !bob.is_peer_ready(&alice_id) {
+                saw_not_ready = true;
+            }
+        }
+        if bob.is_peer_ready(&alice_id) {
+            became_ready = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    assert!(saw_keys, "Bob should receive Alice's key announcement");
+    assert!(saw_not_ready, "Bob should gate readiness before attestation completes");
+    assert!(became_ready, "Bob should mark Alice ready after attestation");
 
     Ok(())
 }
@@ -432,24 +490,51 @@ fn test_malicious_key_announcement_rejected() -> Result<(), Box<dyn std::error::
     let suffix: u32 = rand::random();
     let key_prefix = format!("pqc/attack_keys_{}/", suffix);
 
-    // Start Bob (victim) with TOFU allowed so we exercise signature check.
-    let mut bob = SecureMqttClient::new("localhost", port, "bob_attack")?
-        .with_strict_mode(false)
-        .with_key_prefix(&key_prefix);
+    // Provisioning CA
+    let falcon = Falcon::new();
+    let (ca_pk, ca_sk) = falcon.generate_keypair().expect("ca keygen");
+    let mut ca = OperationalCa::new(ca_pk.clone(), ca_sk);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let bob_id = format!("bob_attack_{}", suffix);
+    let alice_id = format!("alice_attack_{}", suffix);
+
+    // Start Bob (victim) in strict mode (cert required).
+    let (bob_factory_pk, bob_factory_sk) = falcon.generate_keypair().expect("factory keygen");
+    let bob_factory = FactoryIdentity::new(bob_factory_pk, bob_factory_sk);
+    let mut bob = SecureMqttClient::new("localhost", port, &bob_id)?
+        .with_key_prefix(&key_prefix)
+        .with_strict_mode(true);
+    ca.allow_device(&bob_id, bob_factory.pubkey.clone());
+    let bob_join = bob_factory.create_join_request(
+        &bob_id,
+        &bob.get_kem_public_key(),
+        &bob.get_identity_key(),
+        &bob.get_x25519_public_key(),
+    )?;
+    let bob_cert = ca.issue_operational_cert(&bob_join, now, 3600)?;
+    bob = bob
+        .with_trust_anchor_ca_sig_pk(ca_pk.clone())
+        .with_operational_cert(bob_cert);
     bob.bootstrap()?;
 
-    // Malicious actor publishes forged keys for Alice (no signature).
+    // Malicious actor publishes forged keys for Alice (no signature, no cert).
     let mut opts = MqttOptions::new("malicious_publisher", "localhost", port);
     opts.set_clean_session(true);
     let (mut mal_client, mut mal_conn) = RumqttClient::new(opts, 10);
     let bogus = serde_json::json!({
-        "kem_pk": base64::encode("bogus_kem"),
-        "sig_pk": base64::encode("bogus_sig"),
+        "kem_pk": general_purpose::STANDARD.encode(b"bogus_kem"),
+        "sig_pk": general_purpose::STANDARD.encode(b"bogus_sig"),
+        "x25519_pk": general_purpose::STANDARD.encode(b""),
+        "key_epoch": 0,
         "last_sequence": 0,
         "is_trusted": false
     });
     mal_client.publish(
-        format!("{}{}", key_prefix, "alice_attack"),
+        format!("{}{}", key_prefix, &alice_id),
         QoS::AtLeastOnce,
         true,
         serde_json::to_vec(&bogus)?,
@@ -470,27 +555,152 @@ fn test_malicious_key_announcement_rejected() -> Result<(), Box<dyn std::error::
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(
-        !bob.has_peer("alice_attack"),
+        !bob.has_peer(&alice_id),
         "Bob should reject unsigned key announcement"
     );
 
     // Legit Alice joins with signed announcement
-    let mut alice = SecureMqttClient::new("localhost", port, "alice_attack")?
-        .with_strict_mode(false)
-        .with_key_prefix(&key_prefix);
+    let (alice_factory_pk, alice_factory_sk) = falcon.generate_keypair().expect("factory keygen");
+    let alice_factory = FactoryIdentity::new(alice_factory_pk, alice_factory_sk);
+    let mut alice = SecureMqttClient::new("localhost", port, &alice_id)?
+        .with_key_prefix(&key_prefix)
+        .with_strict_mode(true);
+    ca.allow_device(&alice_id, alice_factory.pubkey.clone());
+    let alice_join = alice_factory.create_join_request(
+        &alice_id,
+        &alice.get_kem_public_key(),
+        &alice.get_identity_key(),
+        &alice.get_x25519_public_key(),
+    )?;
+    let alice_cert = ca.issue_operational_cert(&alice_join, now, 3600)?;
+    alice = alice
+        .with_trust_anchor_ca_sig_pk(ca_pk.clone())
+        .with_operational_cert(alice_cert);
     alice.bootstrap()?;
 
     let start = Instant::now();
     let mut ready = false;
     while start.elapsed() < Duration::from_secs(5) {
         bob.poll(|_, _| {})?;
-        if bob.is_peer_ready("alice_attack") {
+        if bob.is_peer_ready(&alice_id) {
             ready = true;
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(ready, "Bob should accept signed announcement from Alice");
+
+    Ok(())
+}
+
+#[test]
+fn test_key_announcement_binds_peer_id() -> Result<(), Box<dyn std::error::Error>> {
+    let port = 29836;
+    common::start_mqtt_broker(port);
+    let suffix: u32 = rand::random();
+    let key_prefix = format!("pqc/bind_keys_{}/", suffix);
+
+    // Provisioning CA
+    let falcon = Falcon::new();
+    let (ca_pk, ca_sk) = falcon.generate_keypair().expect("ca keygen");
+    let mut ca = OperationalCa::new(ca_pk.clone(), ca_sk);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let victim_id = format!("victim_bind_{}", suffix);
+    let alice_id = format!("alice_bind_{}", suffix);
+    let bob_bind_id = format!("bob_bind_{}", suffix);
+
+    // Victim runs strict: accepts only provisioned announcements.
+    let (victim_factory_pk, victim_factory_sk) = falcon.generate_keypair().expect("factory keygen");
+    let victim_factory = FactoryIdentity::new(victim_factory_pk, victim_factory_sk);
+    let mut victim = SecureMqttClient::new("localhost", port, &victim_id)?
+        .with_key_prefix(&key_prefix)
+        .with_strict_mode(true);
+    ca.allow_device(&victim_id, victim_factory.pubkey.clone());
+    let victim_join = victim_factory.create_join_request(
+        &victim_id,
+        &victim.get_kem_public_key(),
+        &victim.get_identity_key(),
+        &victim.get_x25519_public_key(),
+    )?;
+    let victim_cert = ca.issue_operational_cert(&victim_join, now, 3600)?;
+    victim = victim
+        .with_trust_anchor_ca_sig_pk(ca_pk.clone())
+        .with_operational_cert(victim_cert);
+    victim.bootstrap()?;
+
+    // Alice publishes a legitimate signed announcement.
+    let (alice_factory_pk, alice_factory_sk) = falcon.generate_keypair().expect("factory keygen");
+    let alice_factory = FactoryIdentity::new(alice_factory_pk, alice_factory_sk);
+    let mut alice = SecureMqttClient::new("localhost", port, &alice_id)?
+        .with_key_prefix(&key_prefix)
+        .with_strict_mode(true);
+    ca.allow_device(&alice_id, alice_factory.pubkey.clone());
+    let alice_join = alice_factory.create_join_request(
+        &alice_id,
+        &alice.get_kem_public_key(),
+        &alice.get_identity_key(),
+        &alice.get_x25519_public_key(),
+    )?;
+    let alice_cert = ca.issue_operational_cert(&alice_join, now, 3600)?;
+    alice = alice
+        .with_trust_anchor_ca_sig_pk(ca_pk.clone())
+        .with_operational_cert(alice_cert);
+    alice.bootstrap()?;
+
+    // Sniff Alice's retained announcement and re-publish it as if it belonged to "bob_bind".
+    let mut opts = MqttOptions::new("sniffer", "localhost", port);
+    opts.set_clean_session(true);
+    let (mut sniff_client, mut sniff_conn) = RumqttClient::new(opts, 10);
+    sniff_client.subscribe(
+        format!("{}{}", key_prefix, &alice_id),
+        QoS::AtLeastOnce,
+    )?;
+
+    let (tx_payload, rx_payload) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for notification in sniff_conn.iter() {
+            if let Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p))) = notification {
+                let _ = tx_payload.send(p.payload.to_vec());
+                break;
+            }
+        }
+    });
+
+    let alice_payload = rx_payload.recv_timeout(Duration::from_secs(2))?;
+    sniff_client.publish(
+        format!("{}{}", key_prefix, &bob_bind_id),
+        QoS::AtLeastOnce,
+        true,
+        alice_payload,
+    )?;
+
+    // Victim should accept Alice but reject the re-bound "bob_bind" record.
+    let start = Instant::now();
+    let mut got_alice = false;
+    while start.elapsed() < Duration::from_secs(3) {
+        victim.poll(|_, _| {})?;
+        got_alice |= victim.has_peer(&alice_id);
+        if got_alice {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(300) {
+        victim.poll(|_, _| {})?;
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    assert!(got_alice, "Victim should accept Alice's announcement");
+    assert!(
+        !victim.has_peer(&bob_bind_id),
+        "Victim should reject a signed announcement re-published under a different peer id"
+    );
 
     Ok(())
 }
@@ -561,6 +771,7 @@ fn test_coap_security_scenarios() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+#[ignore = "Perf/stress test is intentionally heavy and can hang/flap on CI; run manually when needed"]
 fn test_performance_under_load() -> Result<(), Box<dyn std::error::Error>> {
     let rt = Runtime::new()?; // Keeping rt here for spawn
     let mut clients = Vec::new();

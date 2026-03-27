@@ -6,6 +6,7 @@ use crate::security::keystore::{KeyStore, PeerKeys};
 use crate::security::provider::{SecurityProvider, SoftwareSecurityProvider};
 use crate::security::audit::{AuditLogger, ChainedAuditLogger, SecurityEvent, Severity, AuditLog};
 use crate::security::metrics::SecurityMetrics;
+use crate::provisioning::OperationalCertificate;
 use std::sync::Arc;
 use crate::{Error, Falcon, Kyber, Result}; // Import Kyber and Falcon from root
 use log::{error, warn};
@@ -48,6 +49,20 @@ pub struct SecureMqttClient {
     client_id: String,
     sequence_number: u64,
     strict_mode: bool,
+    /// Pinned mesh CA public key used to verify OperationalCertificates.
+    trust_anchor_ca_sig_pk: Option<Vec<u8>>,
+    /// This device's OperationalCertificate (factory -> operational).
+    operational_cert: Option<OperationalCertificate>,
+    /// If true, peers are marked trusted/ready only after a verifier-driven attestation challenge succeeds.
+    attestation_required: bool,
+    /// Expected PCR digest for attestation (simple policy; production should be per-device/per-firmware).
+    expected_pcr_digest: Vec<u8>,
+    /// Pending attestation nonces we issued: peer_id -> nonce.
+    pending_attestation: std::collections::HashMap<String, Vec<u8>>,
+    /// MQTT topic prefix for attestation challenges (default "pqc/attest/challenge/").
+    attest_challenge_prefix: String,
+    /// MQTT topic prefix for attestation quotes addressed to this verifier (default "pqc/attest/quote/").
+    attest_quote_prefix: String,
     data_dir: std::path::PathBuf,
     encryption_key: Option<Vec<u8>>,
     
@@ -76,23 +91,87 @@ struct OwnKeys {
     sig_sk: Vec<u8>,
     #[serde(with = "crate::security::keystore::base64_serde")]
     sig_pk: Vec<u8>,
+    /// Persisted X25519 static secret used for Hybrid KEM decryption.
+    /// Stored only for exportable software identities; hardware providers should seal internally.
+    #[serde(default, with = "crate::security::keystore::base64_serde")]
+    x25519_sk: Vec<u8>,
+    /// Redundant (derivable) X25519 public key. Kept to detect file corruption/mismatch.
+    #[serde(default, with = "crate::security::keystore::base64_serde")]
+    x25519_pk: Vec<u8>,
+    /// Optional pinned CA public key (Falcon) used for provisioning-backed trust.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(with = "crate::security::keystore::base64_serde_opt")]
+    trust_anchor_ca_sig_pk: Option<Vec<u8>>,
+    /// This device's OperationalCertificate (factory -> operational).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    operational_cert: Option<OperationalCertificate>,
     sequence_number: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AttestationChallenge {
+    verifier_id: String,
+    #[serde(with = "crate::security::keystore::base64_serde")]
+    nonce: Vec<u8>,
+    ts: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AttestationQuoteMessage {
+    subject_id: String,
+    quote: crate::attestation::quote::AttestationQuote,
 }
 
 /// Canonical payload used for signing/verifying key announcements.
 /// Excludes the detached signature field to avoid recursion.
-fn key_announcement_payload(keys: &PeerKeys) -> Vec<u8> {
+fn key_announcement_payload(peer_id: &str, keys: &PeerKeys) -> Vec<u8> {
     let mut buf = Vec::new();
+    // Domain separation + identity binding: prevents re-publishing a signed announcement under a different topic/id.
+    buf.extend_from_slice(b"pqc-iiot:key-announce:v2");
+    buf.extend_from_slice(&(peer_id.as_bytes().len() as u16).to_be_bytes());
+    buf.extend_from_slice(peer_id.as_bytes());
+    buf.extend_from_slice(&keys.key_epoch.to_be_bytes());
+    if let Some(key_id) = &keys.key_id {
+        buf.push(1);
+        buf.extend_from_slice(&(key_id.len() as u16).to_be_bytes());
+        buf.extend_from_slice(key_id);
+    } else {
+        buf.push(0);
+    }
+    buf.extend_from_slice(&(keys.kem_pk.len() as u32).to_be_bytes());
     buf.extend_from_slice(&keys.kem_pk);
+    buf.extend_from_slice(&(keys.sig_pk.len() as u32).to_be_bytes());
     buf.extend_from_slice(&keys.sig_pk);
-    buf.extend_from_slice(&keys.last_sequence.to_be_bytes());
-    buf.push(keys.is_trusted as u8);
+    buf.extend_from_slice(&(keys.x25519_pk.len() as u32).to_be_bytes());
+    buf.extend_from_slice(&keys.x25519_pk);
+
+    if let Some(cert) = &keys.operational_cert {
+        buf.push(1);
+        buf.push(cert.version);
+        buf.extend_from_slice(&(cert.device_id.as_bytes().len() as u16).to_be_bytes());
+        buf.extend_from_slice(cert.device_id.as_bytes());
+        buf.extend_from_slice(&cert.key_epoch.to_be_bytes());
+        buf.extend_from_slice(&cert.expires_at.to_be_bytes());
+        buf.extend_from_slice(&(cert.key_id.len() as u16).to_be_bytes());
+        buf.extend_from_slice(&cert.key_id);
+        buf.extend_from_slice(&(cert.signature.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&cert.signature);
+    } else {
+        buf.push(0);
+    }
 
     if let Some(quote) = &keys.quote {
+        buf.push(1);
+        buf.extend_from_slice(&(quote.pcr_digest.len() as u32).to_be_bytes());
         buf.extend_from_slice(&quote.pcr_digest);
+        buf.extend_from_slice(&(quote.nonce.len() as u32).to_be_bytes());
         buf.extend_from_slice(&quote.nonce);
+        buf.extend_from_slice(&(quote.signature.len() as u32).to_be_bytes());
         buf.extend_from_slice(&quote.signature);
+        buf.extend_from_slice(&(quote.ak_public_key.len() as u32).to_be_bytes());
         buf.extend_from_slice(&quote.ak_public_key);
+    } else {
+        buf.push(0);
     }
 
     buf
@@ -147,7 +226,19 @@ impl SecureMqttClient {
 
         // Load Identity if exists
         let identity_path = data_dir.join(format!("identity_{}.json", client_id));
-        let (pk, sk, sig_pk, sig_sk, seq) = if identity_path.exists() {
+        let mut need_save_identity = false;
+        let mut regenerated_x25519 = false;
+
+        let (
+            pk,
+            sk,
+            sig_pk,
+            sig_sk,
+            x25519_sk,
+            trust_anchor_ca_sig_pk,
+            operational_cert,
+            seq,
+        ) = if identity_path.exists() {
             let _event = SecurityEvent::IdentityLoaded {
                 peer_id: client_id.to_string(), 
                 path: identity_path.to_str().unwrap_or("INVALID_UTF8_PATH").to_string(),
@@ -187,11 +278,52 @@ impl SecureMqttClient {
                 })?
             };
 
+            // X25519 secret persistence (required for Hybrid KEM decrypt).
+            let mut x25519_sk_bytes = [0u8; 32];
+            if own_keys.x25519_sk.len() == 32 {
+                x25519_sk_bytes.copy_from_slice(&own_keys.x25519_sk);
+            } else {
+                // Identity files created before hybrid support will not carry an X25519 secret.
+                // Generate a new one but *invalidate* any existing OperationalCertificate.
+                regenerated_x25519 = true;
+                need_save_identity = true;
+                rand_core::OsRng.fill_bytes(&mut x25519_sk_bytes);
+            }
+
+            let x_secret = x25519_dalek::StaticSecret::from(x25519_sk_bytes);
+            let computed_pk = x25519_dalek::PublicKey::from(&x_secret).to_bytes().to_vec();
+
+            if !own_keys.x25519_pk.is_empty() {
+                if own_keys.x25519_pk.len() != 32 || own_keys.x25519_pk != computed_pk {
+                    return Err(Error::ClientError(
+                        "Identity x25519_pk mismatch (corrupt file or mixed identities)".to_string(),
+                    ));
+                }
+            } else {
+                // Older identities may not store the derived pk. Persist for consistency.
+                need_save_identity = true;
+            }
+
+            let operational_cert = if regenerated_x25519 {
+                if own_keys.operational_cert.is_some() {
+                    warn!(
+                        "OperationalCertificate cleared for {}: regenerated x25519 secret invalidates provisioned identity",
+                        client_id
+                    );
+                }
+                None
+            } else {
+                own_keys.operational_cert
+            };
+
             (
                 own_keys.public_key,
                 own_keys.secret_key,
                 own_keys.sig_pk,
                 own_keys.sig_sk,
+                x25519_sk_bytes,
+                own_keys.trust_anchor_ca_sig_pk,
+                operational_cert,
                 own_keys.sequence_number,
             )
         } else {
@@ -200,7 +332,19 @@ impl SecureMqttClient {
             log::info!("Generating new identity for client: {}", client_id);
             let (pk, sk) = kyber.generate_keypair()?;
             let (sig_pk, sig_sk) = falcon.generate_keypair()?;
-            (pk, sk, sig_pk, sig_sk, 1)
+            let mut x25519_sk_bytes = [0u8; 32];
+            rand_core::OsRng.fill_bytes(&mut x25519_sk_bytes);
+            need_save_identity = true;
+            (
+                pk,
+                sk,
+                sig_pk,
+                sig_sk,
+                x25519_sk_bytes,
+                None,
+                None,
+                1,
+            )
         };
 
         // Load Keystore
@@ -208,12 +352,14 @@ impl SecureMqttClient {
         let keystore_path_str = keystore_path.to_str().ok_or(Error::ClientError("Invalid Keystore Path (Non-UTF8)".into()))?;
         let keystore = KeyStore::load_from_file(keystore_path_str)?;
 
-        // Instantiate SoftwareSecurityProvider
-        let provider = Arc::new(SoftwareSecurityProvider::new(
+        // Instantiate SoftwareSecurityProvider (exportable for identity persistence).
+        // X25519 static secret must be pinned to avoid "self-bricking" decryption failures after restart.
+        let provider = Arc::new(SoftwareSecurityProvider::new_exportable_with_x25519(
             sk.clone(),
             pk.clone(),
             sig_sk.clone(),
             sig_pk.clone(),
+            x25519_sk,
         ));
 
         let client = SecureMqttClient {
@@ -230,6 +376,13 @@ impl SecureMqttClient {
             client_id: client_id.to_string(),
             // Secure by default: reject unknown peers unless explicitly opted out.
             strict_mode: true,
+            trust_anchor_ca_sig_pk,
+            operational_cert,
+            attestation_required: false,
+            expected_pcr_digest: vec![0u8; 32],
+            pending_attestation: std::collections::HashMap::new(),
+            attest_challenge_prefix: "pqc/attest/challenge/".to_string(),
+            attest_quote_prefix: "pqc/attest/quote/".to_string(),
             data_dir: data_dir.clone(), // Clone here to avoid move
             encryption_key: key,
             // kyber, // Removed
@@ -245,8 +398,8 @@ impl SecureMqttClient {
             key_prefix: "pqc/keys/".to_string(),
         };
 
-        // Save identity immediately if new
-        if !identity_path.exists() {
+        // Persist identity if newly generated or migrated (e.g. backfilled x25519 fields).
+        if need_save_identity {
             client.save_identity()?;
         }
 
@@ -256,16 +409,22 @@ impl SecureMqttClient {
     /// Save the current identity to disk.
     pub fn save_identity(&self) -> Result<()> {
         // Export keys from provider.
-        let (sk, ssk) = match self.provider.export_secret_keys() {
+        let exported = match self.provider.export_secret_keys() {
             Some(keys) => keys,
             None => return Err(Error::ClientError("Cannot save identity: Provider does not export keys".to_string())),
         };
 
+        let x25519_pk = self.provider.x25519_public_key();
+
         let own_keys = OwnKeys {
             public_key: self.public_key.clone(),
-            secret_key: sk,
+            secret_key: exported.kem_sk,
             sig_pk: self.sig_pk.clone(),
-            sig_sk: ssk,
+            sig_sk: exported.sig_sk,
+            x25519_sk: exported.x25519_sk.to_vec(),
+            x25519_pk: x25519_pk.to_vec(),
+            trust_anchor_ca_sig_pk: self.trust_anchor_ca_sig_pk.clone(),
+            operational_cert: self.operational_cert.clone(),
             sequence_number: self.sequence_number,
         };
         let identity_path = self.data_dir.join(format!("identity_{}.json", self.client_id));
@@ -354,9 +513,61 @@ impl SecureMqttClient {
         self
     }
 
+    /// Pin the mesh CA public key used to verify OperationalCertificates.
+    ///
+    /// This is the trust anchor that eliminates TOFU for `pqc/keys/*` announcements.
+    pub fn with_trust_anchor_ca_sig_pk(mut self, ca_sig_pk: Vec<u8>) -> Self {
+        self.trust_anchor_ca_sig_pk = Some(ca_sig_pk);
+        self
+    }
+
+    /// Set this device's OperationalCertificate (factory -> operational identity).
+    pub fn with_operational_cert(mut self, cert: OperationalCertificate) -> Self {
+        self.operational_cert = Some(cert);
+        self
+    }
+
+    /// Require verifier-driven remote attestation before marking peers as trusted/ready.
+    pub fn with_attestation_required(mut self, required: bool) -> Self {
+        self.attestation_required = required;
+        self
+    }
+
+    /// Set the expected PCR digest used to verify attestation quotes.
+    ///
+    /// This is a simplified policy hook; production deployments should tie this to
+    /// firmware/boot measurements and device classes.
+    pub fn with_expected_pcr_digest(mut self, digest: Vec<u8>) -> Self {
+        self.expected_pcr_digest = digest;
+        self
+    }
+
+    /// Override attestation topic prefixes.
+    pub fn with_attestation_topics(mut self, challenge_prefix: &str, quote_prefix: &str) -> Self {
+        self.attest_challenge_prefix = challenge_prefix.to_string();
+        if !self.attest_challenge_prefix.ends_with('/') {
+            self.attest_challenge_prefix.push('/');
+        }
+        self.attest_quote_prefix = quote_prefix.to_string();
+        if !self.attest_quote_prefix.ends_with('/') {
+            self.attest_quote_prefix.push('/');
+        }
+        self
+    }
+
     /// Get the client's identity public key (Falcon).
     pub fn get_identity_key(&self) -> Vec<u8> {
         self.sig_pk.clone()
+    }
+
+    /// Get the client's Kyber public key (KEM).
+    pub fn get_kem_public_key(&self) -> Vec<u8> {
+        self.public_key.clone()
+    }
+
+    /// Get the client's X25519 static public key.
+    pub fn get_x25519_public_key(&self) -> Vec<u8> {
+        self.provider.x25519_public_key().to_vec()
     }
 
     /// Initialize the client if not already initialized
@@ -447,22 +658,75 @@ impl SecureMqttClient {
                 .map_err(|e| Error::MqttError(e.to_string()))?;
             println!("SecureMqttClient[{}]: Subscribed.", self.client_id);
 
-            // 2. Generate Attestation Quote for "Handshake"
-            let nonce = vec![1, 2, 3, 4]; // In production, this comes from a Challenge message
-            let quote = self.provider.generate_quote(&[0, 1, 2, 3], &nonce).ok();
+            // Subscribe to attestation topics directed to this client (challenge + quote responses).
+            let challenge_topic = format!("{}{}", self.attest_challenge_prefix, self.client_id);
+            client
+                .subscribe(&challenge_topic, QoS::AtLeastOnce)
+                .map_err(|e| Error::MqttError(e.to_string()))?;
+            let quote_topic = format!("{}{}", self.attest_quote_prefix, self.client_id);
+            client
+                .subscribe(&quote_topic, QoS::AtLeastOnce)
+                .map_err(|e| Error::MqttError(e.to_string()))?;
+
+            // Provisioned identity is the default trust model: eliminate TOFU.
+            // Nonce-based attestation is challenge-driven (handled out-of-band), so bootstrap does not emit a quote.
+            let cert = match &self.operational_cert {
+                Some(c) => Some(c.clone()),
+                None => {
+                    if self.strict_mode {
+                        return Err(Error::ClientError(
+                            "Missing OperationalCertificate: provision the device before bootstrap()".to_string(),
+                        ));
+                    }
+                    None
+                }
+            };
+
+            let x25519_pk = self.provider.x25519_public_key().to_vec();
+
+            // Self-consistency: if provisioned, the cert must bind the live identity keys.
+            if let Some(c) = &cert {
+                if c.device_id != self.client_id {
+                    return Err(Error::ClientError(
+                        "OperationalCertificate device_id mismatch".to_string(),
+                    ));
+                }
+                if c.kem_pk != self.public_key {
+                    return Err(Error::ClientError(
+                        "OperationalCertificate kem_pk mismatch".to_string(),
+                    ));
+                }
+                if c.sig_pk != self.sig_pk {
+                    return Err(Error::ClientError(
+                        "OperationalCertificate sig_pk mismatch".to_string(),
+                    ));
+                }
+                if c.x25519_pk != x25519_pk {
+                    return Err(Error::ClientError(
+                        "OperationalCertificate x25519_pk mismatch".to_string(),
+                    ));
+                }
+            }
+
+            let key_epoch = cert.as_ref().map(|c| c.key_epoch).unwrap_or(0);
+            let key_id = cert.as_ref().map(|c| c.key_id.clone());
 
             // Publish my keys (signed)
             let mut peer_keys = PeerKeys {
                 kem_pk: self.public_key.clone(),
                 sig_pk: self.sig_pk.clone(),
+                x25519_pk,
+                key_epoch,
+                key_id,
+                operational_cert: cert,
                 last_sequence: 0,
                 is_trusted: true, // Self is trusted
-                quote,
+                quote: None,
                 key_signature: None,
             };
 
             // Sign announcement with our identity key
-            let payload = key_announcement_payload(&peer_keys);
+            let payload = key_announcement_payload(&self.client_id, &peer_keys);
             let signature = self.provider.sign(&payload)?;
             peer_keys.key_signature = Some(signature);
 
@@ -509,8 +773,9 @@ impl SecureMqttClient {
         attached_payload.extend_from_slice(&self.sequence_number.to_be_bytes());
         attached_payload.extend_from_slice(payload);
 
-        // 3. Hybrid Encrypt
-        let encrypted_blob = hybrid::encrypt(&target_keys.kem_pk, &attached_payload)?;
+        // 3. Hybrid Encrypt (Kyber + X25519 -> AEAD)
+        let encrypted_blob =
+            hybrid::encrypt(&target_keys.kem_pk, &target_keys.x25519_pk, &attached_payload)?;
 
         // 4. Sign the encrypted blob
         let signature = self.provider.sign(&encrypted_blob)?;
@@ -585,7 +850,7 @@ impl SecureMqttClient {
     /// Check if a peer is ready for encrypted communication (has Kyber key).
     pub fn is_peer_ready(&self, client_id: &str) -> bool {
         if let Some(keys) = self.keystore.get(client_id) {
-            !keys.kem_pk.is_empty()
+            keys.is_trusted && !keys.kem_pk.is_empty() && keys.x25519_pk.len() == 32
         } else {
             false
         }
@@ -606,9 +871,14 @@ impl SecureMqttClient {
         let initial_peer_keys = PeerKeys {
             kem_pk: Vec::new(), // Kyber PK will be updated on first Bootstrap received
             sig_pk: sig_pk.to_vec(),
+            x25519_pk: Vec::new(),
+            key_epoch: 0,
+            key_id: None,
+            operational_cert: None,
             last_sequence: 0,
             is_trusted: true, 
             quote: None,
+            key_signature: None,
         };
 
         // Cache the peer's keys for future encrypted communications
@@ -682,6 +952,26 @@ impl SecureMqttClient {
                     let keys: PeerKeys = serde_json::from_slice(&payload)
                         .map_err(|e| Error::ClientError(format!("Invalid keys: {}", e)))?;
                     self.handle_key_exchange(sender_id, keys)?;
+                }
+                return Ok(None);
+            }
+
+            // 1.1 Attestation challenge (directed to this subject)
+            if let Some(target_id) = topic.strip_prefix(&self.attest_challenge_prefix) {
+                if target_id == self.client_id {
+                    let challenge: AttestationChallenge = serde_json::from_slice(&payload)
+                        .map_err(|e| Error::ClientError(format!("Invalid attestation challenge: {}", e)))?;
+                    self.handle_attestation_challenge(challenge)?;
+                }
+                return Ok(None);
+            }
+
+            // 1.2 Attestation quote (directed to this verifier)
+            if let Some(verifier_id) = topic.strip_prefix(&self.attest_quote_prefix) {
+                if verifier_id == self.client_id {
+                    let msg: AttestationQuoteMessage = serde_json::from_slice(&payload)
+                        .map_err(|e| Error::ClientError(format!("Invalid attestation quote msg: {}", e)))?;
+                    self.handle_attestation_quote(msg)?;
                 }
                 return Ok(None);
             }
@@ -764,80 +1054,303 @@ impl SecureMqttClient {
         Ok(None)
     }
 
-    /// Handle Key Exchange messages (Identity Verification)
-    fn handle_key_exchange(&mut self, sender_id: &str, mut keys: PeerKeys) -> Result<()> {
-        // STRICT MODE CHECK
-        if self.strict_mode {
-            // Must be known AND trusted
-            let existing = self.keystore.get(sender_id);
-            let is_trusted = existing.map(|k| k.is_trusted).unwrap_or(false);
+    fn send_attestation_challenge(&mut self, peer_id: &str) -> Result<()> {
+        if self.pending_attestation.contains_key(peer_id) {
+            return Ok(());
+        }
+        let mut nonce = vec![0u8; 32];
+        rand_core::OsRng.fill_bytes(&mut nonce);
+        self.pending_attestation
+            .insert(peer_id.to_string(), nonce.clone());
 
-            if !is_trusted {
-                warn!("Strict Mode: Rejecting unknown peer {}", sender_id);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let challenge = AttestationChallenge {
+            verifier_id: self.client_id.clone(),
+            nonce,
+            ts: now,
+        };
+        let payload = serde_json::to_vec(&challenge)
+            .map_err(|e| Error::ClientError(format!("Challenge JSON error: {}", e)))?;
+        let topic = format!("{}{}", self.attest_challenge_prefix, peer_id);
+
+        if let Some(client) = &mut self.client {
+            client
+                .publish(topic, QoS::AtLeastOnce, false, payload)
+                .map_err(|e| Error::MqttError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn handle_attestation_challenge(&mut self, challenge: AttestationChallenge) -> Result<()> {
+        // Generate quote bound to challenger nonce.
+        let quote = self
+            .provider
+            .generate_quote(&[0, 1, 2, 3], &challenge.nonce)?;
+
+        let msg = AttestationQuoteMessage {
+            subject_id: self.client_id.clone(),
+            quote,
+        };
+        let payload = serde_json::to_vec(&msg)
+            .map_err(|e| Error::ClientError(format!("Quote JSON error: {}", e)))?;
+
+        let topic = format!("{}{}", self.attest_quote_prefix, challenge.verifier_id);
+        if let Some(client) = &mut self.client {
+            client
+                .publish(topic, QoS::AtLeastOnce, false, payload)
+                .map_err(|e| Error::MqttError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn handle_attestation_quote(&mut self, msg: AttestationQuoteMessage) -> Result<()> {
+        let expected_nonce = match self.pending_attestation.get(&msg.subject_id) {
+            Some(n) => n.clone(),
+            None => {
+                warn!(
+                    "Ignoring attestation quote from {}: no pending challenge",
+                    msg.subject_id
+                );
                 return Ok(());
             }
+        };
 
-            // Verify Identity Key matches the Pre-Approved one!
-            if let Some(known) = existing {
-                if !known.sig_pk.is_empty() && known.sig_pk != keys.sig_pk {
-                    error!("SECURITY ALERT: Peer {} presented different Identity Key!", sender_id);
-                    let event = SecurityEvent::IdentityRotation {
-                        new_key_id: "mismatch_with_trust".to_string(),
-                    };
-                    self.audit_logger.log(AuditLog::new(event, Severity::Critical, "SecureMqttClient"));
-                    self.metrics.inc_failed_handshake();
-                    return Ok(()); // Reject
-                }
+        let peer_keys = match self.keystore.get(&msg.subject_id) {
+            Some(k) => k.clone(),
+            None => {
+                warn!(
+                    "Ignoring attestation quote from {}: unknown peer",
+                    msg.subject_id
+                );
+                return Ok(());
             }
+        };
+
+        // Bind quote AK to certified identity (simplified: AK == identity key).
+        if msg.quote.ak_public_key != peer_keys.sig_pk {
+            warn!(
+                "Attestation quote rejected for {}: AK does not match certified sig_pk",
+                msg.subject_id
+            );
+            return Ok(());
         }
 
-        // VERIFY ANNOUNCEMENT SIGNATURE (required)
+        if let Err(e) = msg
+            .quote
+            .verify(&expected_nonce, &self.expected_pcr_digest)
+        {
+            warn!(
+                "Attestation quote rejected for {}: {}",
+                msg.subject_id, e
+            );
+            return Ok(());
+        }
+
+        // Mark peer trusted and persist.
+        if let Some(k) = self.keystore.get_mut(&msg.subject_id) {
+            k.is_trusted = true;
+            k.quote = Some(msg.quote.clone());
+        }
+        self.pending_attestation.remove(&msg.subject_id);
+
+        self.persist_manager.mark_dirty();
+        if self.persist_manager.should_flush() {
+            let keystore_path = self
+                .data_dir
+                .join(format!("keystore_{}.json", self.client_id));
+            let _ = self.keystore.save_to_file(keystore_path.to_str().unwrap_or(""));
+            self.persist_manager.notify_flushed();
+        }
+
+        Ok(())
+    }
+
+    /// Handle Key Exchange messages (Identity Verification)
+    fn handle_key_exchange(&mut self, sender_id: &str, mut keys: PeerKeys) -> Result<()> {
+        // Detached signature is mandatory (older clients are rejected).
         let signature = match &keys.key_signature {
             Some(sig) => sig,
             None => {
-                warn!("Key exchange from {} rejected: missing signature", sender_id);
+                warn!("Key exchange from {} rejected: missing key_signature", sender_id);
                 self.metrics.inc_failed_handshake();
                 return Ok(());
             }
         };
 
-        // Use pinned identity if known; otherwise TOFU on provided sig_pk
-        let verify_pk = if let Some(existing) = self.keystore.get(sender_id) {
-            &existing.sig_pk
-        } else {
-            &keys.sig_pk
+        // Provisioning-backed trust (no TOFU): require a valid OperationalCertificate.
+        let cert = match &keys.operational_cert {
+            Some(c) => c,
+            None => {
+                if self.strict_mode {
+                    warn!(
+                        "Key exchange from {} rejected: missing operational_cert (strict_mode)",
+                        sender_id
+                    );
+                    self.metrics.inc_failed_handshake();
+                    return Ok(());
+                }
+                // In non-strict mode we allow unsigned provisioning (dev/test), but still require key_signature.
+                // NOTE: This is explicitly insecure (TOFU-like).
+                let payload = key_announcement_payload(sender_id, &keys);
+                let is_valid = verify_falcon_auto(&keys.sig_pk, &payload, signature)?;
+                if !is_valid {
+                    warn!("Key exchange from {} rejected: invalid signature", sender_id);
+                    self.metrics.inc_failed_handshake();
+                    return Ok(());
+                }
+
+                keys.is_trusted = false;
+                self.keystore.insert(sender_id, keys);
+                return Ok(());
+            }
         };
 
-        let payload = key_announcement_payload(&keys);
-        let is_valid = self
-            .falcon
-            .verify(verify_pk, &payload, signature)
-            .map_err(|e| Error::CryptoError(format!("Key announcement verify error: {}", e)))?;
+        let ca_pk = match &self.trust_anchor_ca_sig_pk {
+            Some(pk) => pk,
+            None => {
+                error!(
+                    "Strict mode requires a pinned trust anchor CA public key (missing on {})",
+                    self.client_id
+                );
+                self.metrics.inc_failed_handshake();
+                return Ok(());
+            }
+        };
 
+        // Validate cert now (time window + signature + internal consistency).
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if let Err(e) = cert.verify(ca_pk, Some(now)) {
+            warn!(
+                "Key exchange from {} rejected: invalid operational_cert: {}",
+                sender_id, e
+            );
+            self.metrics.inc_failed_handshake();
+            return Ok(());
+        }
+
+        // Bind cert subject to topic suffix.
+        if cert.device_id != sender_id {
+            warn!(
+                "Key exchange from {} rejected: cert device_id mismatch ({})",
+                sender_id, cert.device_id
+            );
+            self.metrics.inc_failed_handshake();
+            return Ok(());
+        }
+
+        // Enforce that the announced keys match the certified identity.
+        if keys.kem_pk != cert.kem_pk
+            || keys.sig_pk != cert.sig_pk
+            || keys.x25519_pk != cert.x25519_pk
+            || keys.key_epoch != cert.key_epoch
+            || keys
+                .key_id
+                .as_ref()
+                .map(|k| k.as_slice())
+                != Some(cert.key_id.as_slice())
+        {
+            warn!(
+                "Key exchange from {} rejected: announced keys do not match operational_cert",
+                sender_id
+            );
+            self.metrics.inc_failed_handshake();
+            return Ok(());
+        }
+
+        // Local revocation check.
+        if self
+            .keystore
+            .is_key_id_revoked(sender_id, cert.key_id.as_slice())
+        {
+            warn!(
+                "Key exchange from {} rejected: key_id is locally revoked",
+                sender_id
+            );
+            self.metrics.inc_failed_handshake();
+            return Ok(());
+        }
+
+        // Announcement signature check (proof-of-possession of the certified signing key).
+        let payload = key_announcement_payload(sender_id, &keys);
+        let is_valid = verify_falcon_auto(&cert.sig_pk, &payload, signature)?;
         if !is_valid {
             warn!("Key exchange from {} rejected: invalid signature", sender_id);
             self.metrics.inc_failed_handshake();
             return Ok(());
         }
 
-        // TRUST CONTINUITY
+        // Anti-rollback + safe rotation:
+        // - accept replays of the same epoch/key_id (retain messages) without resetting sequencing
+        // - accept higher epochs and reset replay window
+        // - reject lower epochs
         if let Some(existing) = self.keystore.get(sender_id) {
-            if existing.is_trusted {
-                keys.is_trusted = true;
-                // Check for Identity Rotation
-                if !existing.sig_pk.is_empty() && existing.sig_pk != keys.sig_pk {
-                    let event = SecurityEvent::IdentityRotation {
-                        new_key_id: "revoked_trust_change".to_string(),
-                    };
-                    self.audit_logger.log(AuditLog::new(event, Severity::Warning, "SecureMqttClient"));
-                    keys.is_trusted = false; // Revoke trust on identity change
-                }
+            if existing.key_epoch > keys.key_epoch {
+                warn!(
+                    "Key exchange from {} rejected: rollback attempt epoch {} < {}",
+                    sender_id, keys.key_epoch, existing.key_epoch
+                );
+                self.metrics.inc_failed_handshake();
+                return Ok(());
             }
-            // Reset sequence on re-key (new session)
-            keys.last_sequence = 0;
+
+            if existing.key_epoch == keys.key_epoch {
+                let same_key_id = existing.key_id.as_ref().map(|k| k.as_slice())
+                    == keys.key_id.as_ref().map(|k| k.as_slice());
+                if !same_key_id {
+                    warn!(
+                        "Key exchange from {} rejected: epoch collision with different key_id",
+                        sender_id
+                    );
+                    self.metrics.inc_failed_handshake();
+                    return Ok(());
+                }
+
+                // Preserve replay window.
+                keys.last_sequence = existing.last_sequence;
+            } else {
+                // New epoch => new session; reset replay window.
+                keys.last_sequence = 0;
+            }
         }
 
+        // Trust gating:
+        // - baseline: provisioning cert + key_signature is sufficient for identity authenticity
+        // - optional: require a verifier-driven attestation roundtrip before marking peer ready
+        let mut needs_attestation = false;
+        if self.attestation_required {
+            if let Some(existing) = self.keystore.get(sender_id) {
+                // Re-attest on key rotation (epoch change) or if never trusted.
+                if existing.key_epoch != keys.key_epoch || !existing.is_trusted {
+                    needs_attestation = true;
+                }
+                if existing.key_epoch != keys.key_epoch {
+                    // Drop stale nonce (epoch rotated).
+                    self.pending_attestation.remove(sender_id);
+                }
+            } else {
+                needs_attestation = true;
+            }
+        }
+
+        // Trust is local policy; never accept remote claims.
+        keys.is_trusted = !needs_attestation;
+
         self.keystore.insert(sender_id, keys);
+
+        if needs_attestation {
+            if let Err(e) = self.send_attestation_challenge(sender_id) {
+                warn!(
+                    "Failed to send attestation challenge to {}: {}",
+                    sender_id, e
+                );
+            }
+        }
         
         // Lazy Persistence
         self.persist_manager.mark_dirty();
@@ -853,4 +1366,20 @@ impl SecureMqttClient {
         
         Ok(())
     }
+}
+
+fn verify_falcon_auto(pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<bool> {
+    use crate::FalconSecurityLevel;
+    let level = match pk.len() {
+        897 => FalconSecurityLevel::Falcon512,
+        1793 => FalconSecurityLevel::Falcon1024,
+        _ => {
+            return Err(Error::InvalidInput(format!(
+                "Invalid Falcon public key length: {}",
+                pk.len()
+            )))
+        }
+    };
+    let falcon = Falcon::new_with_level(level);
+    falcon.verify(pk, msg, sig)
 }

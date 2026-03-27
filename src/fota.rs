@@ -30,6 +30,21 @@ pub struct FirmwareManifest {
     pub signature: Vec<u8>,
 }
 
+/// Deterministic serialization of the manifest fields that must be authenticated.
+fn manifest_sign_payload(manifest: &FirmwareManifest) -> Vec<u8> {
+    let mut data = Vec::new();
+    data.extend_from_slice(manifest.version.as_bytes());
+    data.extend_from_slice(&manifest.security_version.to_le_bytes());
+    data.extend_from_slice(&manifest.size_bytes.to_le_bytes());
+    data.extend_from_slice(&manifest.firmware_hash);
+    data.extend_from_slice(&(manifest.chunk_hashes.len() as u32).to_le_bytes());
+    for chunk in &manifest.chunk_hashes {
+        data.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+        data.extend_from_slice(chunk);
+    }
+    data
+}
+
 /// Update Engine for Secure Firmware Over-The-Air (FOTA).
 /// Manages verification, rollback, and installation of firmware chunks.
 pub struct UpdateEngine<'a> {
@@ -57,12 +72,8 @@ impl<'a> UpdateEngine<'a> {
         manifest: &FirmwareManifest, 
         _verifier: &dyn SecurityProvider
     ) -> Result<()> {
-        // 1. Serialize manifest distinct from signature for verification
-        // The signature is verified against the serialized manifest components: version, svn, and firmware_hash.
-        let mut signed_data = Vec::new();
-        signed_data.extend_from_slice(manifest.version.as_bytes());
-        signed_data.extend_from_slice(&manifest.security_version.to_le_bytes());
-        signed_data.extend_from_slice(&manifest.firmware_hash);
+        // 1. Canonical payload for signature: includes version, SVN, size and every chunk hash.
+        let signed_data = manifest_sign_payload(manifest);
         
         // 2. Verify Signature using the Platform Abstraction Layer (PAL).
         // This explicitly uses the trusted release key provided during engine initialization.
@@ -123,5 +134,92 @@ impl<'a> UpdateEngine<'a> {
         }
         
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "falcon"))]
+mod tests {
+    use super::*;
+
+    struct NoopProvider;
+
+    impl crate::security::provider::SecurityProvider for NoopProvider {
+        fn kem_public_key(&self) -> &[u8] {
+            &[]
+        }
+
+        fn sig_public_key(&self) -> &[u8] {
+            &[]
+        }
+
+        fn decrypt(&self, _ciphertext: &[u8]) -> crate::Result<Vec<u8>> {
+            unreachable!("not used by this test")
+        }
+
+        fn sign(&self, _message: &[u8]) -> crate::Result<Vec<u8>> {
+            unreachable!("not used by this test")
+        }
+
+        fn export_secret_keys(&self) -> Option<crate::security::provider::ExportedIdentitySecrets> {
+            None
+        }
+
+        fn seal_data(&self, _label: &str, _data: &[u8]) -> crate::Result<()> {
+            unreachable!("not used by this test")
+        }
+
+        fn unseal_data(&self, _label: &str) -> crate::Result<Vec<u8>> {
+            unreachable!("not used by this test")
+        }
+
+        fn generate_quote(
+            &self,
+            _pcr_indices: &[u32],
+            _nonce: &[u8],
+        ) -> crate::Result<crate::attestation::quote::AttestationQuote> {
+            unreachable!("not used by this test")
+        }
+
+        fn x25519_public_key(&self) -> [u8; 32] {
+            [0u8; 32]
+        }
+
+        fn x25519_exchange(&self, _peer_pk: [u8; 32]) -> crate::Result<[u8; 32]> {
+            unreachable!("not used by this test")
+        }
+    }
+
+    #[test]
+    fn manifest_signature_binds_size_and_chunk_hashes() {
+        use crate::crypto::falcon::Falcon;
+        use crate::crypto::traits::PqcSignature;
+
+        let falcon = Falcon::new();
+        let (release_pk, release_sk) = falcon.generate_keypair().expect("keygen");
+
+        let mut manifest = FirmwareManifest {
+            version: "1.0.0".to_string(),
+            security_version: 10,
+            size_bytes: 1234,
+            firmware_hash: vec![0xAA; 32],
+            chunk_hashes: vec![vec![0x01; 32], vec![0x02; 32]],
+            signature: Vec::new(),
+        };
+
+        let payload = manifest_sign_payload(&manifest);
+        manifest.signature = falcon.sign(&release_sk, &payload).expect("sign");
+
+        let engine = UpdateEngine::new(&release_pk, 0);
+        engine
+            .verify_manifest(&manifest, &NoopProvider)
+            .expect("manifest should verify");
+
+        let mut tampered_chunks = manifest.clone();
+        tampered_chunks.chunk_hashes[0][0] ^= 0x01;
+        assert!(engine.verify_manifest(&tampered_chunks, &NoopProvider).is_err());
+
+        let mut tampered_size = manifest.clone();
+        tampered_size.size_bytes += 1;
+        assert!(engine.verify_manifest(&tampered_size, &NoopProvider).is_err());
     }
 }

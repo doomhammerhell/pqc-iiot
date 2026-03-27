@@ -1,3 +1,4 @@
 /target
 pqc-data/
 *.json
+pqc_tpm_state.enc
