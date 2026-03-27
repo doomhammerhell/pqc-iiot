@@ -70,19 +70,19 @@ impl PqcClient<Unprovisioned> {
     }
 
     /// Step 1.1: Generate a Provisioning Join Request.
-    pub fn generate_join_request(&self, device_id: &str) -> Result<JoinRequest> {
-        let pk = self.provider.kem_public_key().to_vec();
-        
-        let factory_id = FactoryIdentity::new(
-            self.provider.sig_public_key().to_vec(),
-            vec![], 
-        );
-        
-        factory_id.create_join_request(
-            device_id,
-            &pk,
-            &*self.provider
-        )
+    ///
+    /// The caller must supply the immutable factory identity (root of trust).
+    /// In real deployments this is fused and/or protected by the secure boundary.
+    pub fn generate_join_request(
+        &self,
+        factory_id: &FactoryIdentity,
+        device_id: &str,
+    ) -> Result<JoinRequest> {
+        let kem_pk = self.provider.kem_public_key().to_vec();
+        let sig_pk = self.provider.sig_public_key().to_vec();
+        let x25519_pk = self.provider.x25519_public_key().to_vec();
+
+        factory_id.create_join_request(device_id, &kem_pk, &sig_pk, &x25519_pk)
     }
 
     /// Step 2: Apply the Provisioning Response (Certificate).
