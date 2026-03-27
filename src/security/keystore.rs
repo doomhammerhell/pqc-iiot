@@ -20,6 +20,19 @@ pub struct PeerKeys {
     /// Signature Public Key (Falcon)
     #[serde(with = "base64_serde")]
     pub sig_pk: Vec<u8>,
+    /// X25519 static public key (for Hybrid KEM).
+    #[serde(default, with = "base64_serde")]
+    pub x25519_pk: Vec<u8>,
+    /// Monotonic key epoch (anti-rollback).
+    #[serde(default)]
+    pub key_epoch: u64,
+    /// Key identifier (first 16 bytes of SHA-256 over certified identity material).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(with = "base64_serde_opt")]
+    pub key_id: Option<Vec<u8>>,
+    /// Operational certificate (factory -> operational identity).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operational_cert: Option<crate::provisioning::OperationalCertificate>,
     /// Last seen sequence number for replay protection
     #[serde(default)] // Default to 0 for compatibility
     pub last_sequence: u64,
@@ -40,6 +53,10 @@ pub struct PeerKeys {
 pub struct KeyStore {
     // Map client_id -> PeerKeys
     keys: std::collections::HashMap<std::string::String, PeerKeys>,
+    /// Local revocation list: peer_id -> key_ids (opaque 16-byte identifiers).
+    /// Used to prevent rollback to compromised identities and to support emergency revocation.
+    #[serde(default)]
+    revoked: std::collections::HashMap<std::string::String, Vec<Vec<u8>>>,
 }
 
 impl Default for KeyStore {
@@ -53,6 +70,7 @@ impl KeyStore {
     pub fn new() -> Self {
         Self {
             keys: std::collections::HashMap::new(),
+            revoked: std::collections::HashMap::new(),
         }
     }
 
@@ -74,6 +92,22 @@ impl KeyStore {
     /// Check if a peer exists.
     pub fn contains(&self, client_id: &str) -> bool {
         self.keys.contains_key(client_id)
+    }
+
+    /// Revoke a specific key_id for a peer.
+    pub fn revoke_key_id(&mut self, client_id: &str, key_id: &[u8]) {
+        let entry = self.revoked.entry(client_id.to_string()).or_default();
+        if !entry.iter().any(|k| k.as_slice() == key_id) {
+            entry.push(key_id.to_vec());
+        }
+    }
+
+    /// Check whether a specific key_id is revoked for a peer.
+    pub fn is_key_id_revoked(&self, client_id: &str, key_id: &[u8]) -> bool {
+        self.revoked
+            .get(client_id)
+            .map(|list| list.iter().any(|k| k.as_slice() == key_id))
+            .unwrap_or(false)
     }
 
     /// Save the keystore to a file (JSON)

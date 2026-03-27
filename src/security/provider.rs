@@ -13,6 +13,13 @@ use sha2::{Digest, Sha256};
 
 /// Trait for abstracting cryptographic operations.
 /// This allows integrating Hardware Security Modules (HSM), TPMs, or TEEs.
+#[derive(Clone, Debug)]
+pub struct ExportedIdentitySecrets {
+    pub kem_sk: Vec<u8>,
+    pub sig_sk: Vec<u8>,
+    pub x25519_sk: [u8; 32],
+}
+
 pub trait SecurityProvider: Send + Sync {
     /// Get the Kyber Public Key (KEM)
     fn kem_public_key(&self) -> &[u8];
@@ -26,9 +33,9 @@ pub trait SecurityProvider: Send + Sync {
     /// Sign a message using the internal Falcon Secret Key.
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>>;
 
-    /// Export secret keys (Kyber SK, Falcon SK) if allowed by the provider.
+    /// Export identity secret keys if allowed by the provider.
     /// Returns None for hardware providers (TPM/HSM).
-    fn export_secret_keys(&self) -> Option<(Vec<u8>, Vec<u8>)>;
+    fn export_secret_keys(&self) -> Option<ExportedIdentitySecrets>;
 
     /// Seal data to persistent storage (e.g. encrypted with Root Key if available).
     fn seal_data(&self, label: &str, data: &[u8]) -> Result<()>;
@@ -70,7 +77,7 @@ impl SoftwareSecurityProvider {
         falcon_sk: Vec<u8>,
         falcon_pk: Vec<u8>,
     ) -> Self {
-        Self::new_with_export_flag(kyber_sk, kyber_pk, falcon_sk, falcon_pk, false)
+        Self::new_with_export_flag(kyber_sk, kyber_pk, falcon_sk, falcon_pk, None, false)
     }
 
     /// Create a provider that allows secret key export (needed for identity persistence).
@@ -81,7 +88,42 @@ impl SoftwareSecurityProvider {
         falcon_sk: Vec<u8>,
         falcon_pk: Vec<u8>,
     ) -> Self {
-        Self::new_with_export_flag(kyber_sk, kyber_pk, falcon_sk, falcon_pk, true)
+        Self::new_with_export_flag(kyber_sk, kyber_pk, falcon_sk, falcon_pk, None, true)
+    }
+
+    /// Create a provider that pins a persisted X25519 static secret.
+    pub fn new_exportable_with_x25519(
+        kyber_sk: Vec<u8>,
+        kyber_pk: Vec<u8>,
+        falcon_sk: Vec<u8>,
+        falcon_pk: Vec<u8>,
+        x25519_sk: [u8; 32],
+    ) -> Self {
+        Self::new_with_export_flag(
+            kyber_sk,
+            kyber_pk,
+            falcon_sk,
+            falcon_pk,
+            Some(x25519_sk),
+            true,
+        )
+    }
+
+    pub fn new_with_x25519(
+        kyber_sk: Vec<u8>,
+        kyber_pk: Vec<u8>,
+        falcon_sk: Vec<u8>,
+        falcon_pk: Vec<u8>,
+        x25519_sk: [u8; 32],
+    ) -> Self {
+        Self::new_with_export_flag(
+            kyber_sk,
+            kyber_pk,
+            falcon_sk,
+            falcon_pk,
+            Some(x25519_sk),
+            false,
+        )
     }
 
     fn new_with_export_flag(
@@ -89,15 +131,21 @@ impl SoftwareSecurityProvider {
         kyber_pk: Vec<u8>,
         falcon_sk: Vec<u8>,
         falcon_pk: Vec<u8>,
+        x25519_sk: Option<[u8; 32]>,
         exportable: bool,
     ) -> Self {
-        let mut rng = rand_core::OsRng;
         Self {
             kyber_sk: zeroize::Zeroizing::new(kyber_sk),
             kyber_pk,
             falcon_sk: zeroize::Zeroizing::new(falcon_sk),
             falcon_pk,
-            x25519_sk: StaticSecret::random_from_rng(&mut rng),
+            x25519_sk: match x25519_sk {
+                Some(bytes) => StaticSecret::from(bytes),
+                None => {
+                    let mut rng = rand_core::OsRng;
+                    StaticSecret::random_from_rng(&mut rng)
+                }
+            },
             exportable,
         }
     }
@@ -144,9 +192,13 @@ impl SecurityProvider for SoftwareSecurityProvider {
         Ok(signature.as_bytes().to_vec())
     }
 
-    fn export_secret_keys(&self) -> Option<(Vec<u8>, Vec<u8>)> {
+    fn export_secret_keys(&self) -> Option<ExportedIdentitySecrets> {
         if self.exportable {
-            Some(((*self.kyber_sk).clone(), (*self.falcon_sk).clone()))
+            Some(ExportedIdentitySecrets {
+                kem_sk: (*self.kyber_sk).clone(),
+                sig_sk: (*self.falcon_sk).clone(),
+                x25519_sk: self.x25519_sk.to_bytes(),
+            })
         } else {
             None
         }
@@ -233,7 +285,8 @@ mod tests {
 
         assert!(provider.export_secret_keys().is_none());
 
-        let exportable = SoftwareSecurityProvider::new_exportable(kyber_sk, kyber_pk, falcon_sk, falcon_pk);
+        let exportable =
+            SoftwareSecurityProvider::new_exportable(kyber_sk, kyber_pk, falcon_sk, falcon_pk);
         assert!(exportable.export_secret_keys().is_some());
 
         let label = format!("seal_test_{}", rand::random::<u32>());

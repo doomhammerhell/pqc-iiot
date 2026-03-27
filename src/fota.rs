@@ -160,7 +160,7 @@ mod tests {
             unreachable!("not used by this test")
         }
 
-        fn export_secret_keys(&self) -> Option<(Vec<u8>, Vec<u8>)> {
+        fn export_secret_keys(&self) -> Option<crate::security::provider::ExportedIdentitySecrets> {
             None
         }
 
