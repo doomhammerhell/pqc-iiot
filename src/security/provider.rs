@@ -1,13 +1,13 @@
 use crate::{Error, Result};
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
 use pqcrypto_falcon::falcon1024::{detached_sign, SecretKey as FalconSecretKey};
 use pqcrypto_falcon::falcon512::{
     detached_sign as detached_sign_512, SecretKey as FalconSecretKey512,
 };
 use pqcrypto_traits::sign::{DetachedSignature, SecretKey as _};
-use aes_gcm::{
-    aead::{Aead, KeyInit},
-    Aes256Gcm, Nonce,
-};
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 
@@ -15,11 +15,19 @@ use sha2::{Digest, Sha256};
 /// This allows integrating Hardware Security Modules (HSM), TPMs, or TEEs.
 #[derive(Clone, Debug)]
 pub struct ExportedIdentitySecrets {
+    /// Kyber (KEM) secret key bytes.
     pub kem_sk: Vec<u8>,
+    /// Falcon (signature) secret key bytes.
     pub sig_sk: Vec<u8>,
+    /// X25519 static secret (classical side of the hybrid scheme).
     pub x25519_sk: [u8; 32],
 }
 
+/// Abstract cryptographic provider boundary.
+///
+/// This trait defines a strict trust boundary: implementors may hold long-term secrets and must
+/// protect them against disclosure and misuse. Production deployments are expected to back this
+/// with a TPM/HSM/TEE. The software implementation exists for tests and demos.
 pub trait SecurityProvider: Send + Sync {
     /// Get the Kyber Public Key (KEM)
     fn kem_public_key(&self) -> &[u8];
@@ -44,7 +52,11 @@ pub trait SecurityProvider: Send + Sync {
     fn unseal_data(&self, label: &str) -> Result<Vec<u8>>;
 
     /// Generate an Attestation Quote.
-    fn generate_quote(&self, pcr_indices: &[u32], nonce: &[u8]) -> Result<crate::attestation::quote::AttestationQuote>;
+    fn generate_quote(
+        &self,
+        pcr_indices: &[u32],
+        nonce: &[u8],
+    ) -> Result<crate::attestation::quote::AttestationQuote>;
 
     /// Get X25519 Public Key.
     fn x25519_public_key(&self) -> [u8; 32];
@@ -109,6 +121,7 @@ impl SoftwareSecurityProvider {
         )
     }
 
+    /// Create a provider with a caller-supplied X25519 static secret, without enabling key export.
     pub fn new_with_x25519(
         kyber_sk: Vec<u8>,
         kyber_pk: Vec<u8>,
@@ -141,10 +154,7 @@ impl SoftwareSecurityProvider {
             falcon_pk,
             x25519_sk: match x25519_sk {
                 Some(bytes) => StaticSecret::from(bytes),
-                None => {
-                    let mut rng = rand_core::OsRng;
-                    StaticSecret::random_from_rng(&mut rng)
-                }
+                None => StaticSecret::random_from_rng(rand_core::OsRng),
             },
             exportable,
         }
@@ -155,7 +165,7 @@ impl SoftwareSecurityProvider {
         hasher.update(&self.falcon_sk);
         hasher.update(label.as_bytes());
         let digest = hasher.finalize();
-        aes_gcm::Key::<Aes256Gcm>::from_slice(&digest).clone()
+        *aes_gcm::Key::<Aes256Gcm>::from_slice(&digest)
     }
 }
 
@@ -241,10 +251,14 @@ impl SecurityProvider for SoftwareSecurityProvider {
             .map_err(|_| crate::Error::CryptoError("Sealed data authentication failed".into()))
     }
 
-    fn generate_quote(&self, _pcr_indices: &[u32], nonce: &[u8]) -> Result<crate::attestation::quote::AttestationQuote> {
+    fn generate_quote(
+        &self,
+        _pcr_indices: &[u32],
+        nonce: &[u8],
+    ) -> Result<crate::attestation::quote::AttestationQuote> {
         // Software provider uses empty PCRs (all zeros) for the demo snapshot.
         // We still sign the quote to keep the verification chain functional.
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let pcr_digest = vec![0u8; 32];
         let mut hasher = Sha256::new();
         hasher.update(&pcr_digest);

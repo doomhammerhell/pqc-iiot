@@ -41,11 +41,18 @@ pub struct Saber {
 
 /// Metrics for SABER operations
 #[derive(Default)]
+#[allow(dead_code)]
 struct SaberMetrics {
     key_generation_time: core::time::Duration,
     encapsulation_time: core::time::Duration,
     decapsulation_time: core::time::Duration,
     operations_count: u64,
+}
+
+impl Default for Saber {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Saber {

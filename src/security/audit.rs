@@ -21,89 +21,89 @@ pub enum Severity {
 pub enum SecurityEvent {
     // Authentication & Identity
     /// A handshake was successfully completed with a peer.
-    HandshakeSuccess { 
+    HandshakeSuccess {
         /// The ID of the peer that connected.
-        peer_id: String 
+        peer_id: String,
     },
     /// A handshake failed.
-    HandshakeFailed { 
+    HandshakeFailed {
         /// The ID of the peer that failed to connect.
-        peer_id: String, 
+        peer_id: String,
         /// The reason for failure.
-        reason: String 
+        reason: String,
     },
     /// Use this event when a known identity is loaded from storage.
-    IdentityLoaded { 
+    IdentityLoaded {
         /// The client ID.
-        peer_id: String, 
+        peer_id: String,
         /// The path from which the identity was loaded.
-        path: String 
-    }, 
-    /// An identity key was rotated.
-    IdentityRotation { 
-        /// The ID of the new key.
-        new_key_id: String 
+        path: String,
     },
-    
+    /// An identity key was rotated.
+    IdentityRotation {
+        /// The ID of the new key.
+        new_key_id: String,
+    },
+
     // Cryptographic Failures
     /// Failed to decrypt a payload. This could indicate probing or data corruption.
-    DecryptionFailure { 
+    DecryptionFailure {
         /// The source of the packet.
-        source: String, 
+        source: String,
         /// Details of the error.
-        details: String 
+        details: String,
     },
     /// A signature verification failed.
-    InvalidSignature { 
+    InvalidSignature {
         /// The source of the signature.
-        source: String 
+        source: String,
     },
     /// A replay attack was detected and prevented.
-    ReplayDetected { 
+    ReplayDetected {
         /// The source of the replayed packet.
-        source: String, 
+        source: String,
         /// The sequence number in the packet.
-        sequence: u64, 
+        sequence: u64,
         /// The expected sequence number.
-        expected: u64 
+        expected: u64,
     },
-    
+
     // Use of weak/deprecated primitives
     /// Usage of a cryptographic algorithm that is considered weak or deprecated.
-    WeakCryptoUsage { 
+    WeakCryptoUsage {
         /// The name of the algorithm.
-        algorithm: String 
+        algorithm: String,
     },
-    
+
     // System & Integrity
     /// Result of the startup integrity check.
-    StartupIntegrityCheck { 
+    StartupIntegrityCheck {
         /// True if the check passed.
-        success: bool 
+        success: bool,
     },
     /// A physical memory tamper attempt was detected.
-    MemoryTamperAttempt { 
+    MemoryTamperAttempt {
         /// The memory address that was accessed.
-        address: usize 
+        address: usize,
     },
-    
+
     // DoS Defense
     /// A DoS puzzle was issued to a client.
-    DosPuzzleChallenge { 
+    DosPuzzleChallenge {
         /// The IP/ID of the client.
-        client_ip: String, 
+        client_ip: String,
         /// The crypto-difficulty assigned.
-        difficulty: u8 
+        difficulty: u8,
     },
     /// Rate limiting was triggered for a client.
-    DosRateLimitTriggered { 
+    DosRateLimitTriggered {
         /// The IP/ID of the client.
-        client_ip: String 
+        client_ip: String,
     },
-    
+
     // Telemetry
     /// A recurring health snapshot of security metrics.
-    TelemetryHealthSnapshot { 
+    TelemetryHealthSnapshot {
         /// Total decryption failures.
         decryption_failures: u64,
         /// Total replay attacks detected.
@@ -136,7 +136,7 @@ impl AuditLog {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-            
+
         Self {
             timestamp,
             severity,
@@ -153,11 +153,11 @@ pub trait AuditLogger: Send + Sync {
     fn log(&self, entry: AuditLog);
 }
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::sync::Mutex;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 /// Cryptographically Chained Log Entry (Tamper-Evident).
 /// Forms a hash chain where `hash_n = SHA256(hash_{n-1} + entry_n)`.
@@ -182,45 +182,47 @@ impl ChainedAuditLogger {
     /// Initialize the Chained Logger, recovering the last hash from disk if available.
     pub fn new(data_dir: &std::path::Path) -> Self {
         let file_path = data_dir.join("audit.log");
-        
+
         // Recover last hash from file if exists, else generic genesis hash
         // Efficiently read from end of file
         let last_hash = if file_path.exists() {
-             use std::io::{Read, Seek, SeekFrom};
-             if let Ok(mut file) = std::fs::File::open(&file_path) {
-                 if let Ok(len) = file.metadata().map(|m| m.len()) {
-                     if len > 0 {
-                         // Seek to end - 1024 bytes (heuristic for last line) or less
-                         let seek_back = std::cmp::min(len, 4096);
-                         if file.seek(SeekFrom::End(-(seek_back as i64))).is_ok() {
-                             let mut buffer = std::vec::Vec::new();
-                             if file.read_to_end(&mut buffer).is_ok() {
-                                 // Convert to string (lossy is fine for JSON check)
-                                 let content = String::from_utf8_lossy(&buffer);
-                                 // Get last non-empty line
-                                 if let Some(last_line) = content.lines().filter(|l| !l.trim().is_empty()).last() {
-                                      match serde_json::from_str::<ChainedLogEntry>(last_line) {
-                                          Ok(entry) => entry.hash,
-                                          Err(_) => "GENESIS_HASH_JSON_ERROR".to_string()
-                                      }
-                                 } else {
-                                     "GENESIS_HASH".to_string()
-                                 }
-                             } else {
-                                 "GENESIS_HASH_READ_ERROR".to_string()
-                             }
-                         } else {
-                             "GENESIS_HASH_SEEK_ERROR".to_string()
-                         }
-                     } else {
-                         "GENESIS_HASH".to_string()
-                     }
-                 } else {
-                     "GENESIS_HASH".to_string()
-                 }
-             } else {
-                 "GENESIS_HASH".to_string()
-             }
+            use std::io::{Read, Seek, SeekFrom};
+            if let Ok(mut file) = std::fs::File::open(&file_path) {
+                if let Ok(len) = file.metadata().map(|m| m.len()) {
+                    if len > 0 {
+                        // Seek to end - 1024 bytes (heuristic for last line) or less
+                        let seek_back = std::cmp::min(len, 4096);
+                        if file.seek(SeekFrom::End(-(seek_back as i64))).is_ok() {
+                            let mut buffer = std::vec::Vec::new();
+                            if file.read_to_end(&mut buffer).is_ok() {
+                                // Convert to string (lossy is fine for JSON check)
+                                let content = String::from_utf8_lossy(&buffer);
+                                // Get last non-empty line
+                                if let Some(last_line) =
+                                    content.lines().rfind(|l| !l.trim().is_empty())
+                                {
+                                    match serde_json::from_str::<ChainedLogEntry>(last_line) {
+                                        Ok(entry) => entry.hash,
+                                        Err(_) => "GENESIS_HASH_JSON_ERROR".to_string(),
+                                    }
+                                } else {
+                                    "GENESIS_HASH".to_string()
+                                }
+                            } else {
+                                "GENESIS_HASH_READ_ERROR".to_string()
+                            }
+                        } else {
+                            "GENESIS_HASH_SEEK_ERROR".to_string()
+                        }
+                    } else {
+                        "GENESIS_HASH".to_string()
+                    }
+                } else {
+                    "GENESIS_HASH".to_string()
+                }
+            } else {
+                "GENESIS_HASH".to_string()
+            }
         } else {
             "GENESIS_HASH".to_string()
         };
@@ -235,28 +237,28 @@ impl ChainedAuditLogger {
 impl AuditLogger for ChainedAuditLogger {
     fn log(&self, entry: AuditLog) {
         let mut last_hash_guard = self.last_hash.lock().unwrap();
-        
+
         // 1. Serialize the core entry
         let entry_json = serde_json::to_string(&entry).unwrap_or_default();
-        
+
         // 2. Calculate New Hash = SHA256(PrevHash + EntryJSON)
         let mut hasher = Sha256::new();
         hasher.update(last_hash_guard.as_bytes());
         hasher.update(entry_json.as_bytes());
         let new_hash = hex::encode(hasher.finalize());
-        
+
         // 3. Create Chained Entry
         let chained = ChainedLogEntry {
             prev_hash: last_hash_guard.clone(),
             entry,
             hash: new_hash.clone(),
         };
-        
+
         // 4. Atomic Write to Disk (Append)
         if let Ok(mut file) = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&self.file_path) 
+            .open(&self.file_path)
         {
             if let Ok(log_line) = serde_json::to_string(&chained) {
                 if let Err(e) = writeln!(file, "{}", log_line) {
@@ -265,12 +267,15 @@ impl AuditLogger for ChainedAuditLogger {
                     // In a real system, we might trigger a shutdown or alert via alternate channel
                 }
             } else {
-                 eprintln!("CRITICAL AUDIT FAILURE: Serialization failed");
+                eprintln!("CRITICAL AUDIT FAILURE: Serialization failed");
             }
         } else {
-             eprintln!("CRITICAL AUDIT FAILURE: Could not open log file {:?}", self.file_path);
+            eprintln!(
+                "CRITICAL AUDIT FAILURE: Could not open log file {:?}",
+                self.file_path
+            );
         }
-        
+
         // 5. Update Memory State
         *last_hash_guard = new_hash;
     }

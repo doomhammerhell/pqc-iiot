@@ -1,11 +1,11 @@
-use pqc_iiot::{coap_secure::SecureCoapClient, mqtt_secure::SecureMqttClient};
-use pqc_iiot::provisioning::{FactoryIdentity, OperationalCa};
+use base64::{engine::general_purpose, Engine as _};
 use pqc_iiot::crypto::traits::PqcSignature;
+use pqc_iiot::provisioning::{FactoryIdentity, OperationalCa};
 use pqc_iiot::Falcon;
+use pqc_iiot::{coap_secure::SecureCoapClient, mqtt_secure::SecureMqttClient};
 use rumqttc::{Client as RumqttClient, MqttOptions, QoS};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
-use base64::{engine::general_purpose, Engine as _};
 mod common;
 
 #[test]
@@ -158,139 +158,155 @@ fn test_replay_protection() -> Result<(), Box<dyn std::error::Error>> {
     let alice_id = format!("alice_rp_{}", suffix);
     let bob_id = format!("bob_rp_{}", suffix);
     let topic = format!("secure/replay_test_{}", suffix);
-    
+
     let alice_id_clone = alice_id.clone();
     let bob_id_clone = bob_id.clone();
     let topic_clone = topic.clone();
 
-    // Challenge: Accessing shared Keepa/State across threads. 
+    // Challenge: Accessing shared Keepa/State across threads.
     // Easier pattern: Client A runs in Thread A, Client B runs in Thread B.
     // They communicate via MQTT logic.
     // We verify via assertions inside the threads or channels back to main.
-    
+
     let (tx_bob_ready, rx_bob_ready) = std::sync::mpsc::channel();
     let (tx_done, rx_done) = std::sync::mpsc::channel();
 
     // BOB THREAD
-    std::thread::Builder::new().name("bob_thread".into()).spawn(move || {
-        println!("Bob: Starting");
-        let mut bob = SecureMqttClient::new("localhost", port, &bob_id_clone).unwrap()
-            .with_keep_alive(Duration::from_secs(5)) // Minimum 5s
-            .with_strict_mode(false) // Allow first-contact during test
-            .with_key_prefix(&format!("pqc/test_keys_{}/", suffix)); // Isolate test run
-            
-        bob.bootstrap().unwrap();
-        bob.subscribe(&topic_clone).unwrap();
-        
-        // Signal ready
-        tx_bob_ready.send(true).unwrap();
+    std::thread::Builder::new()
+        .name("bob_thread".into())
+        .spawn(move || {
+            println!("Bob: Starting");
+            let mut bob = SecureMqttClient::new("localhost", port, &bob_id_clone)
+                .unwrap()
+                .with_keep_alive(Duration::from_secs(5)) // Minimum 5s
+                .with_strict_mode(false) // Allow first-contact during test
+                .with_key_prefix(&format!("pqc/test_keys_{}/", suffix)); // Isolate test run
 
-        // 1. Wait for Alice's Key (Polling loop)
-        // In a real thread, we just poll continuously.
-        let mut got_alice = false;
-        let mut received_msg1 = false;
-        let mut received_msg2 = false;
-        
-        // Run for a longer duration to accommodate 5s blocks
-        let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(60) {
-            if let Err(e) = bob.poll(|_, payload| {
-                println!("Bob: Received payload: {:?}", std::str::from_utf8(payload));
-                if payload == b"Secret Message 1" {
-                    println!("Bob: Got Message 1");
-                    received_msg1 = true;
+            bob.bootstrap().unwrap();
+            bob.subscribe(&topic_clone).unwrap();
+
+            // Signal ready
+            tx_bob_ready.send(true).unwrap();
+
+            // 1. Wait for Alice's Key (Polling loop)
+            // In a real thread, we just poll continuously.
+            let mut got_alice = false;
+            let mut received_msg1 = false;
+            let mut received_msg2 = false;
+
+            // Run for a longer duration to accommodate 5s blocks
+            let start = std::time::Instant::now();
+            while start.elapsed() < Duration::from_secs(60) {
+                if let Err(e) = bob.poll(|_, payload| {
+                    println!("Bob: Received payload: {:?}", std::str::from_utf8(payload));
+                    if payload == b"Secret Message 1" {
+                        println!("Bob: Got Message 1");
+                        received_msg1 = true;
+                    }
+                    if payload == b"Secret Message 2" {
+                        println!("Bob: Got Message 2");
+                        received_msg2 = true;
+                    }
+                }) {
+                    eprintln!("Bob poll error: {}", e);
                 }
-                if payload == b"Secret Message 2" {
-                    println!("Bob: Got Message 2");
-                    received_msg2 = true;
+
+                if !got_alice && bob.has_peer(&alice_id_clone) {
+                    println!("Bob: Found Alice's Key");
+                    got_alice = true;
                 }
-            }) {
-                eprintln!("Bob poll error: {}", e);
+
+                if received_msg1 && received_msg2 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
             }
 
-            if !got_alice && bob.has_peer(&alice_id_clone) {
-                println!("Bob: Found Alice's Key");
-                got_alice = true;
+            println!(
+                "Bob: Finished loop. Key={}, M1={}, M2={}",
+                got_alice, received_msg1, received_msg2
+            );
+
+            // Assertions need to be sent back or panic here (panics in threads might be caught differently)
+            if !got_alice || !received_msg1 || !received_msg2 {
+                eprintln!(
+                    "Bob failed: Key={}, M1={}, M2={}",
+                    got_alice, received_msg1, received_msg2
+                );
             }
-            
-            if received_msg1 && received_msg2 {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        
-        println!("Bob: Finished loop. Key={}, M1={}, M2={}", got_alice, received_msg1, received_msg2);
-        
-        // Assertions need to be sent back or panic here (panics in threads might be caught differently)
-        if !got_alice || !received_msg1 || !received_msg2 {
-             eprintln!("Bob failed: Key={}, M1={}, M2={}", got_alice, received_msg1, received_msg2);
-        }
-        assert!(got_alice, "Bob never received Alice's key");
-        assert!(received_msg1, "Bob never received Msg 1");
-        assert!(received_msg2, "Bob never received Msg 2");
-        
-        tx_done.send(true).unwrap();
-    }).unwrap();
+            assert!(got_alice, "Bob never received Alice's key");
+            assert!(received_msg1, "Bob never received Msg 1");
+            assert!(received_msg2, "Bob never received Msg 2");
+
+            tx_done.send(true).unwrap();
+        })
+        .unwrap();
 
     // ALICE THREAD
     // Wait for Bob to come online slightly
     rx_bob_ready.recv().unwrap();
-    
-    std::thread::Builder::new().name("alice_thread".into()).spawn(move || {
-        println!("Alice: Starting");
-        let mut alice = SecureMqttClient::new("localhost", port, &alice_id).unwrap()
-            .with_keep_alive(Duration::from_secs(5))
-            .with_strict_mode(false) // Allow first-contact during test
-            .with_key_prefix(&format!("pqc/test_keys_{}/", suffix)); 
-            
-        // Wait for Bob's subscription to propagate
-        std::thread::sleep(Duration::from_secs(1));
-        alice.bootstrap().unwrap();
 
-        // Wait for Bob's Key
-        let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(25) {
-            if let Err(e) = alice.poll(|_,_| {}) {
-                eprintln!("Alice poll error: {}", e);
+    std::thread::Builder::new()
+        .name("alice_thread".into())
+        .spawn(move || {
+            println!("Alice: Starting");
+            let mut alice = SecureMqttClient::new("localhost", port, &alice_id)
+                .unwrap()
+                .with_keep_alive(Duration::from_secs(5))
+                .with_strict_mode(false) // Allow first-contact during test
+                .with_key_prefix(&format!("pqc/test_keys_{}/", suffix));
+
+            // Wait for Bob's subscription to propagate
+            std::thread::sleep(Duration::from_secs(1));
+            alice.bootstrap().unwrap();
+
+            // Wait for Bob's Key
+            let start = std::time::Instant::now();
+            while start.elapsed() < Duration::from_secs(25) {
+                if let Err(e) = alice.poll(|_, _| {}) {
+                    eprintln!("Alice poll error: {}", e);
+                }
+                if alice.has_peer(&bob_id) {
+                    println!("Alice: Found Bob's Key");
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
             }
-            if alice.has_peer(&bob_id) {
-                println!("Alice: Found Bob's Key");
-                break;
+            if !alice.has_peer(&bob_id) {
+                eprintln!("Alice: Timed out waiting for Bob's key");
             }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        if !alice.has_peer(&bob_id) {
-            eprintln!("Alice: Timed out waiting for Bob's key");
-        } 
 
-        // Wait for Bob's subscription to propagate
-        // Wait for Bob's subscription to propagate
-        std::thread::sleep(Duration::from_secs(1));
+            // Wait for Bob's subscription to propagate
+            // Wait for Bob's subscription to propagate
+            std::thread::sleep(Duration::from_secs(1));
 
-        println!("Alice: About to publish 1...");
-        // Send Msg 1
-        println!("Alice: Sending Message 1");
-        if let Err(e) = alice.publish_encrypted(&topic, b"Secret Message 1", &bob_id) {
-             eprintln!("Alice Publish 1 Error: {}", e);
-        } else {
-             println!("Alice Publish 1 Success");
-        }
-        
-        // Small delay
-        std::thread::sleep(Duration::from_millis(500));
-        
-        // Send Msg 2
-        println!("Alice: Sending Message 2");
-        alice.publish_encrypted(&topic, b"Secret Message 2", &bob_id).unwrap();
-        
-        // Keep polling to flush
-        println!("Alice: Polling flush loop...");
-        for _ in 0..10 {
-            alice.poll(|_,_| {}).ok();
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        println!("Alice: Done");
-    }).unwrap();
+            println!("Alice: About to publish 1...");
+            // Send Msg 1
+            println!("Alice: Sending Message 1");
+            if let Err(e) = alice.publish_encrypted(&topic, b"Secret Message 1", &bob_id) {
+                eprintln!("Alice Publish 1 Error: {}", e);
+            } else {
+                println!("Alice Publish 1 Success");
+            }
+
+            // Small delay
+            std::thread::sleep(Duration::from_millis(500));
+
+            // Send Msg 2
+            println!("Alice: Sending Message 2");
+            alice
+                .publish_encrypted(&topic, b"Secret Message 2", &bob_id)
+                .unwrap();
+
+            // Keep polling to flush
+            println!("Alice: Polling flush loop...");
+            for _ in 0..10 {
+                alice.poll(|_, _| {}).ok();
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            println!("Alice: Done");
+        })
+        .unwrap();
 
     // Main thread waits for Bob to finish verification
     let result = rx_done.recv_timeout(Duration::from_secs(40));
@@ -359,7 +375,8 @@ fn test_strict_mode() -> Result<(), Box<dyn std::error::Error>> {
 
     // Trusted peer: provisioned (cert present) => must be accepted.
     let trusted_id = format!("trusted_node_{}", suffix);
-    let (trusted_factory_pk, trusted_factory_sk) = falcon.generate_keypair().expect("factory keygen");
+    let (trusted_factory_pk, trusted_factory_sk) =
+        falcon.generate_keypair().expect("factory keygen");
     let trusted_factory = FactoryIdentity::new(trusted_factory_pk, trusted_factory_sk);
 
     let mut trusted_client = SecureMqttClient::new("localhost", port, &trusted_id)?
@@ -477,8 +494,14 @@ fn test_attestation_gates_trust() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     assert!(saw_keys, "Bob should receive Alice's key announcement");
-    assert!(saw_not_ready, "Bob should gate readiness before attestation completes");
-    assert!(became_ready, "Bob should mark Alice ready after attestation");
+    assert!(
+        saw_not_ready,
+        "Bob should gate readiness before attestation completes"
+    );
+    assert!(
+        became_ready,
+        "Bob should mark Alice ready after attestation"
+    );
 
     Ok(())
 }
@@ -652,31 +675,40 @@ fn test_key_announcement_binds_peer_id() -> Result<(), Box<dyn std::error::Error
     alice.bootstrap()?;
 
     // Sniff Alice's retained announcement and re-publish it as if it belonged to "bob_bind".
+    //
+    // `rumqttc::Client` requires its `Connection` event loop to be driven; if the connection is
+    // dropped, subsequent publishes fail with `Request(SendError(..))`. Keep the connection alive
+    // in a background thread until after we re-publish.
+    let alice_topic = format!("{}{}", key_prefix, &alice_id);
+    let bob_topic = format!("{}{}", key_prefix, &bob_bind_id);
+
     let mut opts = MqttOptions::new("sniffer", "localhost", port);
     opts.set_clean_session(true);
     let (mut sniff_client, mut sniff_conn) = RumqttClient::new(opts, 10);
-    sniff_client.subscribe(
-        format!("{}{}", key_prefix, &alice_id),
-        QoS::AtLeastOnce,
-    )?;
+    sniff_client.subscribe(alice_topic.clone(), QoS::AtLeastOnce)?;
 
-    let (tx_payload, rx_payload) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let (tx_payload, rx_payload) = std::sync::mpsc::channel::<Vec<u8>>();
+    let sniff_handle = std::thread::spawn(move || {
+        let mut sent = false;
         for notification in sniff_conn.iter() {
-            if let Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p))) = notification {
-                let _ = tx_payload.send(p.payload.to_vec());
-                break;
+            match notification {
+                Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p)))
+                    if !sent && p.topic == alice_topic =>
+                {
+                    let _ = tx_payload.send(p.payload.to_vec());
+                    sent = true;
+                }
+                Ok(_) => {}
+                Err(_) => break,
             }
         }
     });
 
     let alice_payload = rx_payload.recv_timeout(Duration::from_secs(2))?;
-    sniff_client.publish(
-        format!("{}{}", key_prefix, &bob_bind_id),
-        QoS::AtLeastOnce,
-        true,
-        alice_payload,
-    )?;
+    sniff_client.publish(bob_topic, QoS::AtLeastOnce, true, alice_payload)?;
+    sniff_client.disconnect()?;
+    drop(sniff_client);
+    sniff_handle.join().expect("sniffer thread panicked");
 
     // Victim should accept Alice but reject the re-bound "bob_bind" record.
     let start = Instant::now();

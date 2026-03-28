@@ -186,7 +186,9 @@ impl CryptoProfileTrait for ProfileKyberFalcon {
             return Err(ProfileError::InvalidConfig);
         }
         let kem_sk = &sk[..KYBER768_SK_LEN];
-        self.kem.decapsulate(kem_sk, ct).map_err(ProfileError::KemError)
+        self.kem
+            .decapsulate(kem_sk, ct)
+            .map_err(ProfileError::KemError)
     }
 
     fn sign(&self, sk: &[u8], msg: &[u8]) -> Result<Vec<u8>, ProfileError> {
@@ -196,7 +198,9 @@ impl CryptoProfileTrait for ProfileKyberFalcon {
             return Err(ProfileError::InvalidConfig);
         }
         let sign_sk = &sk[KYBER768_SK_LEN..KYBER768_SK_LEN + FALCON512_SK_LEN];
-        self.sign.sign(sign_sk, msg).map_err(ProfileError::SignError)
+        self.sign
+            .sign(sign_sk, msg)
+            .map_err(ProfileError::SignError)
     }
 
     fn verify(&self, pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<bool, ProfileError> {
@@ -242,6 +246,13 @@ impl ProfileSaberDilithium {
             kem: crate::Saber::new_with_level(crate::SaberSecurityLevel::Saber),
             sign: crate::Dilithium::new_with_level(crate::DilithiumSecurityLevel::Level3),
         }
+    }
+}
+
+#[cfg(all(feature = "saber", feature = "dilithium"))]
+impl Default for ProfileSaberDilithium {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -315,6 +326,13 @@ impl ProfileKyberDilithium {
             kem: crate::Kyber::new_with_level(crate::KyberSecurityLevel::Kyber768),
             sign: crate::Dilithium::new_with_level(crate::DilithiumSecurityLevel::Level3),
         }
+    }
+}
+
+#[cfg(all(feature = "kyber", feature = "dilithium"))]
+impl Default for ProfileKyberDilithium {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

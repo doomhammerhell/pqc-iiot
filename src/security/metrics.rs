@@ -25,6 +25,12 @@ pub struct SecurityMetrics {
     pub integrity_ok: AtomicU64,
 }
 
+impl Default for SecurityMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SecurityMetrics {
     /// Initialize new zeroed metrics.
     pub fn new() -> Self {
@@ -45,7 +51,7 @@ impl SecurityMetrics {
     pub fn inc_active_sessions(&self) {
         self.active_sessions.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// Decrement active sessions count.
     pub fn dec_active_sessions(&self) {
         self.active_sessions.fetch_sub(1, Ordering::Relaxed);
@@ -65,7 +71,7 @@ impl SecurityMetrics {
     pub fn inc_decryption_failure(&self) {
         self.decryption_failures.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// Increment replay attacks.
     pub fn inc_replay_attack(&self) {
         self.replay_attacks_detected.fetch_add(1, Ordering::Relaxed);

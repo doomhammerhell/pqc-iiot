@@ -8,15 +8,15 @@
 //! software-backed keys, fully adhering to the `SecurityProvider` interface.
 
 use super::provider::SecurityProvider;
+use crate::crypto::falcon::Falcon;
+use crate::crypto::kyber::Kyber;
+use crate::crypto::traits::{PqcKEM, PqcSignature};
 use crate::error::{Error, Result};
 use rand_core::RngCore;
-use zeroize::{Zeroize, ZeroizeOnDrop};
-use crate::crypto::kyber::Kyber;
-use crate::crypto::falcon::Falcon;
-use crate::crypto::traits::{PqcKEM, PqcSignature};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// A Software-backed Security Provider.
 ///
@@ -58,8 +58,8 @@ struct TpmState {
     sig_pk: Vec<u8>,
 }
 
-use aes_gcm::KeyInit; // Added KeyInit import
-use aes_gcm::aead::Aead; // Added Aead import
+use aes_gcm::aead::Aead;
+use aes_gcm::KeyInit; // Added KeyInit import // Added Aead import
 
 impl SoftwareTpm {
     /// Initialize the Software TPM with Secure Persistence.
@@ -67,7 +67,7 @@ impl SoftwareTpm {
     /// If not found, provisions a new Identity and SEALS it.
     pub fn new() -> Result<Self> {
         let storage_path = "pqc_tpm_state.enc";
-        
+
         // Try to load existing state
         if let Ok(state) = Self::load_from_storage(storage_path) {
             // Fix borrow checker: Copy keys out before moving state
@@ -78,30 +78,32 @@ impl SoftwareTpm {
                 (guard.kem_pk.clone(), guard.sig_pk.clone(), x_pk)
             };
             return Ok(Self {
-                kem_pk: k_pk, 
+                kem_pk: k_pk,
                 sig_pk: s_pk,
                 x25519_pk: x_pk,
                 state,
             });
         }
-        
+
         // Provision New Identity
         let kyber = Kyber::new();
-        let (k_pk, k_sk) = kyber.generate_keypair()
+        let (k_pk, k_sk) = kyber
+            .generate_keypair()
             .map_err(|e| Error::CryptoError(format!("SoftwareTpm Init Kyber Fail: {:?}", e)))?;
-            
-        let falcon = Falcon::new();
-        let (f_pk, f_sk) = falcon.generate_keypair()
-             .map_err(|e| Error::CryptoError(format!("SoftwareTpm Init Falcon Fail: {:?}", e)))?;
 
-        let x25519_sk = x25519_dalek::StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let falcon = Falcon::new();
+        let (f_pk, f_sk) = falcon
+            .generate_keypair()
+            .map_err(|e| Error::CryptoError(format!("SoftwareTpm Init Falcon Fail: {:?}", e)))?;
+
+        let x25519_sk = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
         let x25519_pk = x25519_dalek::PublicKey::from(&x25519_sk).to_bytes();
 
         let mut pcrs = HashMap::new();
         for i in 0..24 {
             pcrs.insert(i, [0u8; 32]);
         }
-        
+
         let tpm_state = TpmState {
             pcrs,
             kem_sk: k_sk,
@@ -110,7 +112,7 @@ impl SoftwareTpm {
             kem_pk: k_pk.clone(), // Added to state
             sig_pk: f_pk.clone(), // Added to state
         };
-        
+
         // SEAL (Encrypt and Save)
         Self::seal_to_storage(storage_path, &tpm_state)?;
 
@@ -121,25 +123,25 @@ impl SoftwareTpm {
             x25519_pk,
         })
     }
-    
+
     // --- Persistence Helpers ---
-    
+
     /// Derive the Device Root Key from Physical Unclonable Functions (PUF).
-    /// 
+    ///
     /// # Internal (Silicon Level)
     /// In a real system, this key is NOT STORED anywhere. It is generated at boot
     /// from the noise in the SRAM startup state or silicon manufacturing variations.
-    /// 
+    ///
     /// # Simulation
     /// We derive it from a stable combination of hardware factors:
     /// CPUID + MAC + Stable Hardware UUID.
     fn derive_puf_root_key() -> Result<[u8; 32]> {
         use sha2::Digest;
         let mut hasher = sha2::Sha256::new();
-        
+
         // Simulating PUF source material
         hasher.update(b"PQH_IIOT_SILICON_FINGERPRINT_V4");
-        
+
         #[cfg(feature = "std")]
         {
             // Injecting stable hardware bits (Simulated PUF entropy)
@@ -147,86 +149,97 @@ impl SoftwareTpm {
             hasher.update(b"MAC: 00:AB:CD:12:34:56");
             hasher.update(b"HARDWARE_UUID: AF09-1123-BCDA-9908");
         }
-        
+
         let mut key = [0u8; 32];
         key.copy_from_slice(hasher.finalize().as_slice());
-        
+
         // Zero-Knowledge Proof: We just "remake" the key on the fly.
         Ok(key)
     }
-    
+
     // acquire_device_root_key is now DEPRECATED in favor of PUF.
     fn acquire_device_root_key() -> Result<[u8; 32]> {
         Self::derive_puf_root_key()
     }
-    
+
     fn load_from_storage(path: &str) -> Result<Arc<Mutex<TpmState>>> {
-        let data = std::fs::read(path).map_err(|_| Error::CryptoError("TPM Storage Not Found".into()))?;
-        
-        if data.len() < 12 { return Err(Error::CryptoError("Invalid TPM Storage".into())); }
-        
+        let data =
+            std::fs::read(path).map_err(|_| Error::CryptoError("TPM Storage Not Found".into()))?;
+
+        if data.len() < 12 {
+            return Err(Error::CryptoError("Invalid TPM Storage".into()));
+        }
+
         let nonce = &data[0..12];
         let ciphertext = &data[12..];
-        
+
         let key = Self::acquire_device_root_key()?;
         let cipher = aes_gcm::Aes256Gcm::new(&key.into());
         let nonce = aes_gcm::Nonce::from_slice(nonce);
-        
-        let plaintext = cipher.decrypt(nonce, ciphertext)
-            .map_err(|_| Error::CryptoError("TPM Storage Decryption Failed (Tamper/Corruption)".into()))?;
-            
+
+        let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| {
+            Error::CryptoError("TPM Storage Decryption Failed (Tamper/Corruption)".into())
+        })?;
+
         let state: TpmState = serde_json::from_slice(&plaintext)
             .map_err(|_| Error::CryptoError("TPM State Deserialization Failed".into()))?;
-            
+
         Ok(Arc::new(Mutex::new(state)))
     }
-    
+
     fn seal_to_storage(path: &str, state: &TpmState) -> Result<()> {
         let plaintext = serde_json::to_vec(state)
             .map_err(|_| Error::CryptoError("TPM State Serialization Failed".into()))?;
-            
+
         let key = Self::acquire_device_root_key()?;
         let cipher = aes_gcm::Aes256Gcm::new(&key.into());
-        
+
         let mut nonce_bytes = [0u8; 12];
         use rand_core::RngCore;
         rand_core::OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = aes_gcm::Nonce::from_slice(&nonce_bytes);
-        
-        let ciphertext = cipher.encrypt(nonce, plaintext.as_ref())
+
+        let ciphertext = cipher
+            .encrypt(nonce, plaintext.as_ref())
             .map_err(|_| Error::CryptoError("TPM Storage Encryption Failed".into()))?;
-            
+
         let mut final_data = Vec::with_capacity(12 + ciphertext.len());
         final_data.extend_from_slice(&nonce_bytes);
         final_data.extend_from_slice(&ciphertext);
-        
+
         std::fs::write(path, final_data)
-             .map_err(|_| Error::CryptoError("TPM Storage Write Failed".into()))?;
-             
+            .map_err(|_| Error::CryptoError("TPM Storage Write Failed".into()))?;
+
         Ok(())
     }
-    
+
     /// Extend a PCR with a measurement hash.
-    /// PCR[i] = SHA256(PCR[i] || Measurement)
+    /// `PCR[i] = SHA256(PCR[i] || Measurement)`
     pub fn pcr_extend(&self, pcr_index: u32, measurement: &[u8]) -> Result<()> {
-        let mut state = self.state.lock().map_err(|_| Error::CryptoError("TPM Lock Poisoned".into()))?;
-        
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::CryptoError("TPM Lock Poisoned".into()))?;
+
         if let Some(pcr_val) = state.pcrs.get_mut(&pcr_index) {
-             let mut hasher = Sha256::new();
-             hasher.update(&*pcr_val); // Reborrow effectively
-             hasher.update(measurement);
-             *pcr_val = hasher.finalize().into();
-             Ok(())
+            let mut hasher = Sha256::new();
+            hasher.update(*pcr_val); // Hash current PCR value + new measurement
+            hasher.update(measurement);
+            *pcr_val = hasher.finalize().into();
+            Ok(())
         } else {
             Err(Error::CryptoError("Invalid PCR Index".into()))
         }
     }
-    
+
     /// Quote a PCR selection.
     /// Returns: (CompositeHash, Signature)
     pub fn quote(&self, pcr_indices: &[u32], nonce: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
-        let state = self.state.lock().map_err(|_| Error::CryptoError("TPM Lock Poisoned".into()))?;
-        
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| Error::CryptoError("TPM Lock Poisoned".into()))?;
+
         // 1. Calculate Composite Hash
         let mut hasher = Sha256::new();
         for idx in pcr_indices {
@@ -236,12 +249,13 @@ impl SoftwareTpm {
         }
         hasher.update(nonce);
         let digest = hasher.finalize();
-        
+
         // 2. Sign Quote with AIK (using Falcon Identity Key)
         let falcon = Falcon::new();
-        let signature = falcon.sign(&state.sig_sk, &digest)
+        let signature = falcon
+            .sign(&state.sig_sk, &digest)
             .map_err(|e| Error::CryptoError(format!("TPM Quote Sign Fail: {:?}", e)))?;
-            
+
         Ok((digest.to_vec(), signature))
     }
 
@@ -250,37 +264,42 @@ impl SoftwareTpm {
         let path = format!("pqc_session_{}.enc", session_id);
         let key = Self::acquire_device_root_key()?;
         let cipher = aes_gcm::Aes256Gcm::new(&key.into());
-        
+
         let mut nonce_bytes = [0u8; 12];
         rand_core::OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = aes_gcm::Nonce::from_slice(&nonce_bytes);
-        
-        let ciphertext = cipher.encrypt(nonce, session_data)
+
+        let ciphertext = cipher
+            .encrypt(nonce, session_data)
             .map_err(|_| Error::CryptoError("Session Sealing Failed".into()))?;
-            
+
         let mut final_data = Vec::with_capacity(12 + ciphertext.len());
         final_data.extend_from_slice(&nonce_bytes);
         final_data.extend_from_slice(&ciphertext);
-        
+
         std::fs::write(path, final_data)
-             .map_err(|_| Error::IoError(std::io::Error::new(std::io::ErrorKind::Other, "Session Write Fail")))
+            .map_err(|_| Error::IoError(std::io::Error::other("Session Write Fail")))
     }
 
     /// Unseal a session state from encrypted storage.
     pub fn unseal_session(&self, session_id: &str) -> Result<Vec<u8>> {
         let path = format!("pqc_session_{}.enc", session_id);
-        let data = std::fs::read(path).map_err(|_| Error::CryptoError("Session Not Found".into()))?;
-        
-        if data.len() < 12 { return Err(Error::CryptoError("Invalid Session Data".into())); }
-        
+        let data =
+            std::fs::read(path).map_err(|_| Error::CryptoError("Session Not Found".into()))?;
+
+        if data.len() < 12 {
+            return Err(Error::CryptoError("Invalid Session Data".into()));
+        }
+
         let nonce = &data[0..12];
         let ciphertext = &data[12..];
-        
+
         let key = Self::acquire_device_root_key()?;
         let cipher = aes_gcm::Aes256Gcm::new(&key.into());
         let nonce = aes_gcm::Nonce::from_slice(nonce);
-        
-        cipher.decrypt(nonce, ciphertext)
+
+        cipher
+            .decrypt(nonce, ciphertext)
             .map_err(|_| Error::CryptoError("Session Unsealing Failed (Tamper/Corruption)".into()))
     }
 }
@@ -295,20 +314,28 @@ impl SecurityProvider for SoftwareTpm {
     }
 
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>> {
-        let state = self.state.lock().map_err(|_| Error::CryptoError("TPM Lock Poisoned".into()))?;
-        
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| Error::CryptoError("TPM Lock Poisoned".into()))?;
+
         // Real Crypto Operation
         let falcon = Falcon::new();
-        falcon.sign(&state.sig_sk, message)
+        falcon
+            .sign(&state.sig_sk, message)
             .map_err(|e| Error::CryptoError(format!("TPM Sign Fail: {:?}", e)))
     }
 
     fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
-        let state = self.state.lock().map_err(|_| Error::CryptoError("TPM Lock Poisoned".into()))?;
-        
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| Error::CryptoError("TPM Lock Poisoned".into()))?;
+
         // Real Crypto Operation
         let kyber = Kyber::new();
-        kyber.decapsulate(&state.kem_sk, ciphertext)
+        kyber
+            .decapsulate(&state.kem_sk, ciphertext)
             .map_err(|e| Error::CryptoError(format!("TPM Decrypt Fail: {:?}", e)))
     }
 
@@ -325,7 +352,11 @@ impl SecurityProvider for SoftwareTpm {
         self.unseal_session(label)
     }
 
-    fn generate_quote(&self, pcr_indices: &[u32], nonce: &[u8]) -> Result<crate::attestation::quote::AttestationQuote> {
+    fn generate_quote(
+        &self,
+        pcr_indices: &[u32],
+        nonce: &[u8],
+    ) -> Result<crate::attestation::quote::AttestationQuote> {
         let (digest, sig) = self.quote(pcr_indices, nonce)?;
         Ok(crate::attestation::quote::AttestationQuote {
             pcr_digest: digest,
@@ -340,7 +371,10 @@ impl SecurityProvider for SoftwareTpm {
     }
 
     fn x25519_exchange(&self, peer_pk: [u8; 32]) -> Result<[u8; 32]> {
-        let state = self.state.lock().map_err(|_| Error::CryptoError("TPM Lock Poisoned".into()))?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| Error::CryptoError("TPM Lock Poisoned".into()))?;
         let sk = x25519_dalek::StaticSecret::from(state.x25519_sk);
         let peer_pub = x25519_dalek::PublicKey::from(peer_pk);
         let shared = sk.diffie_hellman(&peer_pub);

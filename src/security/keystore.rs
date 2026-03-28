@@ -115,7 +115,7 @@ impl KeyStore {
     pub fn save_to_file(&self, path: &str) -> crate::Result<()> {
         let data = serde_json::to_vec_pretty(&self)
             .map_err(|e| crate::Error::ClientError(format!("Serialization error: {}", e)))?;
-        
+
         crate::persistence::AtomicFileStore::write(std::path::Path::new(path), &data)?;
         Ok(())
     }
@@ -161,7 +161,7 @@ pub mod base64_serde_opt {
     use alloc::string::String;
     use alloc::vec::Vec;
     use base64::{engine::general_purpose, Engine as _};
-    use serde::{Deserialize, Serializer, Deserializer};
+    use serde::{Deserialize, Deserializer, Serializer};
 
     /// Serialize optional bytes to a Base64 string.
     pub fn serialize<S: Serializer>(v: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
@@ -177,10 +177,8 @@ pub mod base64_serde_opt {
     /// Deserialize an optional Base64 string into bytes.
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<u8>>, D::Error> {
         let opt: Option<String> = Option::deserialize(d)?;
-        Ok(opt
-            .map(|s| general_purpose::STANDARD.decode(s.as_bytes()))
+        opt.map(|s| general_purpose::STANDARD.decode(s.as_bytes()))
             .transpose()
-            .map_err(serde::de::Error::custom)?
-        )
+            .map_err(serde::de::Error::custom)
     }
 }

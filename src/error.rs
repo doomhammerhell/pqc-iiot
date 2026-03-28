@@ -1,7 +1,10 @@
 //! Error types for the PQC-IIoT crate
 
+use alloc::string::String;
+use core::fmt;
+
 /// Result type for PQC-IIoT operations
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = core::result::Result<T, Error>;
 
 /// Errors that can occur during cryptographic operations
 #[derive(Debug)]
@@ -25,6 +28,7 @@ pub enum Error {
     /// Error during MQTT operations
     MqttError(String),
     /// Error during I/O operations
+    #[cfg(feature = "std")]
     IoError(std::io::Error),
     /// Error during CoAP operations
     CoapError(String),
@@ -43,8 +47,8 @@ pub enum Error {
 #[cfg(feature = "std")]
 impl std::error::Error for Error {}
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::KeyGenerationError(e) => write!(f, "Key generation error: {}", e),
             Error::EncapsulationError(e) => write!(f, "Encapsulation error: {}", e),
@@ -52,6 +56,7 @@ impl std::fmt::Display for Error {
             Error::SigningError(e) => write!(f, "Signing error: {}", e),
             Error::VerificationError(e) => write!(f, "Verification error: {}", e),
             Error::MqttError(e) => write!(f, "MQTT error: {}", e),
+            #[cfg(feature = "std")]
             Error::IoError(e) => write!(f, "IO error: {}", e),
             Error::CoapError(e) => write!(f, "CoAP error: {}", e),
             Error::ClientError(e) => write!(f, "Client error: {}", e),
@@ -63,5 +68,12 @@ impl std::fmt::Display for Error {
             Error::ProtocolError(e) => write!(f, "Protocol violation: {}", e),
             Error::ComplianceError(e) => write!(f, "Compliance error: {}", e),
         }
+    }
+}
+
+#[cfg(feature = "std")]
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        Self::IoError(err)
     }
 }
