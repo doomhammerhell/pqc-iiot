@@ -1492,6 +1492,7 @@ dependencies = [
  "coap-lite",
  "criterion",
  "env_logger",
+ "getrandom 0.2.15",
  "heapless",
  "hex",
  "hkdf",

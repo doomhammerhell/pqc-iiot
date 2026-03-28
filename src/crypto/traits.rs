@@ -57,6 +57,7 @@
 //! - Security level mismatches
 
 use core::fmt;
+use alloc::vec::Vec;
 
 /// Error type for cryptographic operations
 #[derive(Debug)]

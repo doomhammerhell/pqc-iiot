@@ -12,28 +12,36 @@ extern crate alloc;
 extern crate std;
 
 /// Audit logging and event tracking
+#[cfg(feature = "serde")]
 pub mod audit;
 /// Remote Attestation features for verifying firmware integrity.
 pub mod attestation {
     /// Remote Attestation Quotes
+    #[cfg(feature = "serde")]
     pub mod quote;
 }
 /// Typestate Client Machine for enforcing secure state transitions.
+#[cfg(feature = "std")]
 pub mod client_state;
 pub mod compliance;
 pub mod error;
 /// Secure Firmware Over-The-Air (FOTA) updates.
 #[cfg(feature = "std")]
 pub mod fota;
+#[cfg(feature = "kyber-pqclean")]
 pub mod kem;
 #[cfg(feature = "std")]
 pub mod persistence;
 /// Industrial Provisioning Protocol (Join/Enrollment).
+#[cfg(feature = "std")]
 pub mod provisioning;
 /// Cryptographic Ratcheting (Double Ratchet) for Forward Secrecy.
+#[cfg(feature = "std")]
 pub mod ratchet;
 /// Security primitives and providers
+#[cfg(feature = "std")]
 pub mod security;
+#[cfg(feature = "falcon-pqclean")]
 pub mod sign;
 pub mod utils;
 
@@ -78,7 +86,9 @@ pub mod mqtt_secure;
 #[cfg(feature = "coap")]
 pub mod coap_secure;
 
+#[cfg(feature = "std")]
 pub use security::hybrid;
+#[cfg(feature = "std")]
 pub use security::keystore::KeyStore;
 
 pub use crypto::traits::{Metrics, SecurityLevel};

@@ -1,6 +1,7 @@
 use crate::crypto::falcon::Falcon;
 use crate::crypto::traits::PqcSignature;
 use crate::error::{Error, Result};
+use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 

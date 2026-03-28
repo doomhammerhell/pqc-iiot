@@ -44,10 +44,13 @@ extern "C" {
 }
 
 /// Helper to check if a range is within valid memory regions
-fn is_valid_memory_range(_start: *const u8, _len: usize) -> bool {
+fn is_valid_memory_range(start: *const u8, len: usize) -> bool {
     // In hosted/test mode, we can't check against linker symbols of the host
     #[cfg(not(target_os = "none"))]
-    return true;
+    {
+        let _ = (start, len);
+        return true;
+    }
 
     #[cfg(target_os = "none")]
     unsafe {
@@ -89,9 +92,7 @@ pub unsafe fn verify_memory_integrity(
     }
 
     if len == 0 {
-        return Err(Error::ComplianceError(
-            "Zero length memory range".to_string(),
-        ));
+        return Err(Error::ComplianceError("Zero length memory range".into()));
     }
 
     let mut hasher = Sha256::new();
@@ -108,7 +109,7 @@ pub unsafe fn verify_memory_integrity(
             "[COMPLIANCE] Integrity Check FAILED. Calculated: {:x?}, Expected: {:x?}",
             result, expected_hash
         );
-        return Err(Error::ComplianceError("Integrity Check Failed".to_string()));
+        return Err(Error::ComplianceError("Integrity Check Failed".into()));
     }
 
     info!("[COMPLIANCE] Memory Integrity Verified.");
@@ -120,7 +121,7 @@ fn test_integrity() -> Result<()> {
     // We verify a known local constant to prove the hasher works.
     let data = b"pqc-iiot-integrity-check";
     let expected = hex::decode("1adef1ac56909d3e5320799507ee1c75f01788450cbd5e56f7341135660423f9")
-        .map_err(|_| Error::ComplianceError("Hex decode failed".to_string()))?;
+        .map_err(|_| Error::ComplianceError("Hex decode failed".into()))?;
 
     unsafe { verify_memory_integrity(data.as_ptr(), data.len(), &expected) }
 }
@@ -144,7 +145,7 @@ fn test_aes_gcm_kat() -> Result<()> {
         .map_err(|e| Error::ComplianceError(format!("AES KAT Decryption failed: {}", e)))?;
 
     if decrypted != plaintext {
-        return Err(Error::ComplianceError("AES KAT Mismatch".to_string()));
+        return Err(Error::ComplianceError("AES KAT Mismatch".into()));
     }
     Ok(())
 }
@@ -167,7 +168,7 @@ fn test_kyber_pct() -> Result<()> {
 
     if shared_secret_a != shared_secret_b {
         error!("[COMPLIANCE] Kyber PCT FAILED (Shared Secret Mismatch)");
-        return Err(Error::ComplianceError("Kyber PCT Failed".to_string()));
+        return Err(Error::ComplianceError("Kyber PCT Failed".into()));
     }
     Ok(())
 }
