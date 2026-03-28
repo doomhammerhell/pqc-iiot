@@ -4,7 +4,9 @@
 //! a lattice-based key encapsulation mechanism (KEM) that is resistant to
 //! quantum computer attacks.
 
-use crate::crypto::traits::{KeyRotation, Metrics, PqcKEM, SecurityLevel};
+#[cfg(feature = "std")]
+use crate::crypto::traits::KeyRotation;
+use crate::crypto::traits::{Metrics, PqcKEM, SecurityLevel};
 use crate::error::Error;
 use alloc::vec::Vec;
 use core::fmt;
@@ -155,9 +157,7 @@ impl Metrics for Kyber {
 }
 
 #[cfg(feature = "kyber-pqclean")]
-fn kyber_generate_keypair(
-    security_level: KyberSecurityLevel,
-) -> Result<(Vec<u8>, Vec<u8>), Error> {
+fn kyber_generate_keypair(security_level: KyberSecurityLevel) -> Result<(Vec<u8>, Vec<u8>), Error> {
     let (pk, sk) = match security_level {
         KyberSecurityLevel::Kyber512 => {
             let (pk, sk) = pqcrypto_kyber::kyber512::keypair();

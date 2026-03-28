@@ -7,7 +7,7 @@
 
 #[cfg(feature = "coap-std")]
 mod std_client {
-    use crate::crypto::traits::{PqcKEM, PqcSignature};
+    use crate::crypto::traits::PqcSignature;
     use crate::{Error, Falcon, Kyber, Result};
     use coap_lite::{CoapRequest, CoapResponse, Packet, RequestType};
     use std::net::{SocketAddr, UdpSocket};

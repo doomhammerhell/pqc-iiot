@@ -10,6 +10,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
 };
+use alloc::format;
 use log::{error, info};
 use sha2::{Digest, Sha256};
 
@@ -49,7 +50,7 @@ fn is_valid_memory_range(start: *const u8, len: usize) -> bool {
     #[cfg(not(target_os = "none"))]
     {
         let _ = (start, len);
-        return true;
+        true
     }
 
     #[cfg(target_os = "none")]

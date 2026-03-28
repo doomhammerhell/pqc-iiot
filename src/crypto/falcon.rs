@@ -4,7 +4,9 @@
 //! a lattice-based digital signature scheme that is resistant to
 //! quantum computer attacks.
 
-use crate::crypto::traits::{KeyRotation, Metrics, PqcSignature, SecurityLevel};
+#[cfg(feature = "std")]
+use crate::crypto::traits::KeyRotation;
+use crate::crypto::traits::{Metrics, PqcSignature, SecurityLevel};
 use crate::error::Error;
 use alloc::vec::Vec;
 use core::fmt;
