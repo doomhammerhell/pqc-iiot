@@ -42,7 +42,7 @@ To enable **Strict Authentication**, you must pre-load trusted identities:
 ```rust
 // Load trusted keys from a secure source
 let trusted_keys = load_trusted_keys(); 
-client.add_trusted_peer("controller_01", trusted_keys.falcon_pk);
+client.add_trusted_peer("controller_01", trusted_keys.falcon_pk)?;
 ```
 
 ## Protocol Specification

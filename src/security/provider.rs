@@ -11,6 +11,13 @@ use pqcrypto_traits::sign::{DetachedSignature, SecretKey as _};
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 
+fn sealed_blob_path(label: &str) -> std::path::PathBuf {
+    // Never use `label` as a path fragment directly: it may carry path separators and trigger
+    // traversal/overwrite. Hash it into a stable, filesystem-safe name.
+    let digest = Sha256::digest(label.as_bytes());
+    std::path::PathBuf::from(format!("pqc_sealed_{}.bin", hex::encode(digest)))
+}
+
 /// Trait for abstracting cryptographic operations.
 /// This allows integrating Hardware Security Modules (HSM), TPMs, or TEEs.
 #[derive(Clone, Debug)]
@@ -217,7 +224,7 @@ impl SecurityProvider for SoftwareSecurityProvider {
     }
 
     fn seal_data(&self, label: &str, data: &[u8]) -> Result<()> {
-        let path = format!("pqc_sealed_{}.bin", label);
+        let path = sealed_blob_path(label);
         let key = self.sealing_key(label);
         let cipher = Aes256Gcm::new(&key);
         let mut nonce_bytes = [0u8; 12];
@@ -233,13 +240,21 @@ impl SecurityProvider for SoftwareSecurityProvider {
         out.extend_from_slice(&nonce_bytes);
         out.extend_from_slice(&ciphertext);
 
-        std::fs::write(path, out).map_err(crate::Error::IoError)
+        crate::persistence::AtomicFileStore::write(&path, &out)
     }
 
     fn unseal_data(&self, label: &str) -> Result<Vec<u8>> {
-        let path = format!("pqc_sealed_{}.bin", label);
-        let blob = std::fs::read(path)
-            .map_err(|_| crate::Error::CryptoError("Sealed data not found".into()))?;
+        const MAX_SEALED_BYTES: usize = 1024 * 1024; // 1 MiB anti-OOM guardrail
+
+        let path = sealed_blob_path(label);
+        let blob =
+            match crate::persistence::AtomicFileStore::read_with_limit(&path, MAX_SEALED_BYTES) {
+                Ok(b) => b,
+                Err(crate::Error::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(crate::Error::CryptoError("Sealed data not found".into()));
+                }
+                Err(e) => return Err(e),
+            };
         if blob.len() < 12 {
             return Err(crate::Error::CryptoError("Sealed data too short".into()));
         }
@@ -320,7 +335,7 @@ mod tests {
         let out = provider.unseal_data(&label).expect("unseal_data");
         assert_eq!(out, data);
 
-        let path = format!("pqc_sealed_{}.bin", label);
+        let path = super::sealed_blob_path(&label);
         let blob = std::fs::read(&path).expect("read sealed blob");
         assert_eq!(blob.len(), 12 + data.len() + 16);
         std::fs::remove_file(&path).expect("cleanup");

@@ -12,9 +12,11 @@ use crate::crypto::falcon::Falcon;
 use crate::crypto::kyber::Kyber;
 use crate::crypto::traits::{PqcKEM, PqcSignature};
 use crate::error::{Error, Result};
+use log::error;
 use rand_core::RngCore;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -35,6 +37,7 @@ pub struct SoftwareTpm {
     pub sig_pk: Vec<u8>,
     /// Public Key for X25519 (PQH Hybrid)
     pub x25519_pk: [u8; 32],
+    data_dir: PathBuf,
 }
 
 /// Internal State of the Software TPM
@@ -66,13 +69,40 @@ impl SoftwareTpm {
     /// Tries to load state from potentially encrypted storage.
     /// If not found, provisions a new Identity and SEALS it.
     pub fn new() -> Result<Self> {
-        let storage_path = "pqc_tpm_state.enc";
+        let data_dir = Path::new("pqc-data");
+        if !data_dir.exists() {
+            std::fs::create_dir_all(data_dir).map_err(Error::IoError)?;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(e) =
+                std::fs::set_permissions(data_dir, std::fs::Permissions::from_mode(0o700))
+            {
+                error!("failed to set permissions on {:?}: {}", data_dir, e);
+            }
+        }
+        let data_dir = data_dir.to_path_buf();
+
+        let storage_path = data_dir.join("tpm_state.enc");
+        let legacy_storage_path = Path::new("pqc_tpm_state.enc");
 
         // Try to load existing state
-        if let Ok(state) = Self::load_from_storage(storage_path) {
+        let loaded = match Self::load_from_storage(&storage_path) {
+            Ok(state) => Some(state),
+            Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e),
+        };
+        if let Some(state) = loaded {
             // Fix borrow checker: Copy keys out before moving state
             let (k_pk, s_pk, x_pk) = {
-                let guard = state.lock().unwrap();
+                let guard = match state.lock() {
+                    Ok(g) => g,
+                    Err(poison) => {
+                        error!("tpm state mutex poisoned; continuing with recovered state");
+                        poison.into_inner()
+                    }
+                };
                 let x_sk = x25519_dalek::StaticSecret::from(guard.x25519_sk);
                 let x_pk = x25519_dalek::PublicKey::from(&x_sk).to_bytes();
                 (guard.kem_pk.clone(), guard.sig_pk.clone(), x_pk)
@@ -82,6 +112,43 @@ impl SoftwareTpm {
                 sig_pk: s_pk,
                 x25519_pk: x_pk,
                 state,
+                data_dir,
+            });
+        }
+
+        // Legacy migration: load from old path (repo root) and reseal under `pqc-data/`.
+        if legacy_storage_path.exists() {
+            let state = Self::load_from_storage(legacy_storage_path)?;
+            {
+                let guard = match state.lock() {
+                    Ok(g) => g,
+                    Err(poison) => {
+                        error!("tpm state mutex poisoned; continuing with recovered state");
+                        poison.into_inner()
+                    }
+                };
+                Self::seal_to_storage(&storage_path, &guard)?;
+            }
+            let _ = std::fs::remove_file(legacy_storage_path);
+
+            let (k_pk, s_pk, x_pk) = {
+                let guard = match state.lock() {
+                    Ok(g) => g,
+                    Err(poison) => {
+                        error!("tpm state mutex poisoned; continuing with recovered state");
+                        poison.into_inner()
+                    }
+                };
+                let x_sk = x25519_dalek::StaticSecret::from(guard.x25519_sk);
+                let x_pk = x25519_dalek::PublicKey::from(&x_sk).to_bytes();
+                (guard.kem_pk.clone(), guard.sig_pk.clone(), x_pk)
+            };
+            return Ok(Self {
+                kem_pk: k_pk,
+                sig_pk: s_pk,
+                x25519_pk: x_pk,
+                state,
+                data_dir,
             });
         }
 
@@ -114,13 +181,14 @@ impl SoftwareTpm {
         };
 
         // SEAL (Encrypt and Save)
-        Self::seal_to_storage(storage_path, &tpm_state)?;
+        Self::seal_to_storage(&storage_path, &tpm_state)?;
 
         Ok(Self {
             state: Arc::new(Mutex::new(tpm_state)),
             kem_pk: k_pk,
             sig_pk: f_pk,
             x25519_pk,
+            data_dir,
         })
     }
 
@@ -162,9 +230,10 @@ impl SoftwareTpm {
         Self::derive_puf_root_key()
     }
 
-    fn load_from_storage(path: &str) -> Result<Arc<Mutex<TpmState>>> {
-        let data =
-            std::fs::read(path).map_err(|_| Error::CryptoError("TPM Storage Not Found".into()))?;
+    fn load_from_storage(path: &Path) -> Result<Arc<Mutex<TpmState>>> {
+        const MAX_TPM_STATE_BYTES: usize = 4 * 1024 * 1024; // 4 MiB anti-OOM guardrail
+
+        let data = crate::persistence::AtomicFileStore::read_with_limit(path, MAX_TPM_STATE_BYTES)?;
 
         if data.len() < 12 {
             return Err(Error::CryptoError("Invalid TPM Storage".into()));
@@ -187,7 +256,7 @@ impl SoftwareTpm {
         Ok(Arc::new(Mutex::new(state)))
     }
 
-    fn seal_to_storage(path: &str, state: &TpmState) -> Result<()> {
+    fn seal_to_storage(path: &Path, state: &TpmState) -> Result<()> {
         let plaintext = serde_json::to_vec(state)
             .map_err(|_| Error::CryptoError("TPM State Serialization Failed".into()))?;
 
@@ -207,10 +276,7 @@ impl SoftwareTpm {
         final_data.extend_from_slice(&nonce_bytes);
         final_data.extend_from_slice(&ciphertext);
 
-        std::fs::write(path, final_data)
-            .map_err(|_| Error::CryptoError("TPM Storage Write Failed".into()))?;
-
-        Ok(())
+        crate::persistence::AtomicFileStore::write(path, &final_data)
     }
 
     /// Extend a PCR with a measurement hash.
@@ -261,7 +327,10 @@ impl SoftwareTpm {
 
     /// Seal an arbitrary session state to encrypted storage.
     pub fn seal_session(&self, session_id: &str, session_data: &[u8]) -> Result<()> {
-        let path = format!("pqc_session_{}.enc", session_id);
+        let digest = Sha256::digest(session_id.as_bytes());
+        let path = self
+            .data_dir
+            .join(format!("session_{}.enc", hex::encode(digest)));
         let key = Self::acquire_device_root_key()?;
         let cipher = aes_gcm::Aes256Gcm::new(&key.into());
 
@@ -277,15 +346,24 @@ impl SoftwareTpm {
         final_data.extend_from_slice(&nonce_bytes);
         final_data.extend_from_slice(&ciphertext);
 
-        std::fs::write(path, final_data)
-            .map_err(|_| Error::IoError(std::io::Error::other("Session Write Fail")))
+        crate::persistence::AtomicFileStore::write(&path, &final_data)
     }
 
     /// Unseal a session state from encrypted storage.
     pub fn unseal_session(&self, session_id: &str) -> Result<Vec<u8>> {
-        let path = format!("pqc_session_{}.enc", session_id);
+        let digest = Sha256::digest(session_id.as_bytes());
+        let path = self
+            .data_dir
+            .join(format!("session_{}.enc", hex::encode(digest)));
+        const MAX_SESSION_BYTES: usize = 4 * 1024 * 1024; // 4 MiB anti-OOM guardrail
         let data =
-            std::fs::read(path).map_err(|_| Error::CryptoError("Session Not Found".into()))?;
+            match crate::persistence::AtomicFileStore::read_with_limit(&path, MAX_SESSION_BYTES) {
+                Ok(d) => d,
+                Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(Error::CryptoError("Session Not Found".into()));
+                }
+                Err(e) => return Err(e),
+            };
 
         if data.len() < 12 {
             return Err(Error::CryptoError("Invalid Session Data".into()));

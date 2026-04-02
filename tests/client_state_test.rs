@@ -51,7 +51,7 @@ fn test_client_state_machine_deep_flow() {
         let mut client_x_pk_bytes = [0u8; 32];
         client_x_pk_bytes.copy_from_slice(client_x_pk);
 
-        let server_x_sk = x25519_dalek::StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let server_x_sk = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
         let server_x_pk = x25519_dalek::PublicKey::from(&server_x_sk).to_bytes();
         let _x_secret =
             server_x_sk.diffie_hellman(&x25519_dalek::PublicKey::from(client_x_pk_bytes));

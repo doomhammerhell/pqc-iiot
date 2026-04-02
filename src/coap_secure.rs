@@ -122,10 +122,14 @@ mod std_client {
             if self.socket.is_none() {
                 let socket =
                     UdpSocket::bind("0.0.0.0:0").map_err(|e| Error::ClientError(e.to_string()))?;
-                socket.set_read_timeout(Some(self.timeout)).ok();
+                socket
+                    .set_read_timeout(Some(self.timeout))
+                    .map_err(|e| Error::ClientError(e.to_string()))?;
                 self.socket = Some(socket);
             }
-            Ok(self.socket.as_ref().expect("socket just initialized"))
+            self.socket
+                .as_ref()
+                .ok_or_else(|| Error::ClientError("Socket missing".into()))
         }
 
         fn sign_payload(&self, payload: &[u8]) -> Result<Vec<u8>> {

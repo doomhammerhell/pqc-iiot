@@ -28,10 +28,15 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       
-      - name: Supply Chain Audit (cargo-audit)
-        uses: actions-rs/audit-check@v1
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+
+      - name: Supply Chain Audit (cargo-audit)
+        run: |
+          cargo generate-lockfile
+          cargo audit
           
       - name: Static Analysis (Clippy Pedantic)
         run: cargo clippy --all-features -- -D warnings
