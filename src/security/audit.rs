@@ -153,6 +153,7 @@ pub trait AuditLogger: Send + Sync {
     fn log(&self, entry: AuditLog);
 }
 
+use log::error;
 use sha2::{Digest, Sha256};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -236,10 +237,25 @@ impl ChainedAuditLogger {
 
 impl AuditLogger for ChainedAuditLogger {
     fn log(&self, entry: AuditLog) {
-        let mut last_hash_guard = self.last_hash.lock().unwrap();
+        let mut last_hash_guard = match self.last_hash.lock() {
+            Ok(g) => g,
+            Err(poison) => {
+                // Continue with the inner value to avoid crashing the logger, but signal loudly.
+                error!("audit logger mutex poisoned; continuing with recovered state");
+                poison.into_inner()
+            }
+        };
+
+        let severity = entry.severity;
 
         // 1. Serialize the core entry
-        let entry_json = serde_json::to_string(&entry).unwrap_or_default();
+        let entry_json = match serde_json::to_string(&entry) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("CRITICAL AUDIT FAILURE: entry serialization failed: {}", e);
+                return;
+            }
+        };
 
         // 2. Calculate New Hash = SHA256(PrevHash + EntryJSON)
         let mut hasher = Sha256::new();
@@ -255,23 +271,35 @@ impl AuditLogger for ChainedAuditLogger {
         };
 
         // 4. Atomic Write to Disk (Append)
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.file_path)
+        let mut open = OpenOptions::new();
+        open.create(true).append(true);
+        #[cfg(unix)]
         {
+            use std::os::unix::fs::OpenOptionsExt;
+            open.mode(0o600);
+        }
+        if let Ok(mut file) = open.open(&self.file_path) {
             if let Ok(log_line) = serde_json::to_string(&chained) {
                 if let Err(e) = writeln!(file, "{}", log_line) {
                     // FATAL: Audit Failure
-                    eprintln!("CRITICAL AUDIT FAILURE: Could not write to log: {}", e);
+                    error!("CRITICAL AUDIT FAILURE: could not write to log: {}", e);
                     // In a real system, we might trigger a shutdown or alert via alternate channel
+                } else {
+                    // Ensure durability for critical events; best-effort for lower severities.
+                    let sync_res = match severity {
+                        Severity::Critical | Severity::Alert => file.sync_data(),
+                        Severity::Info | Severity::Warning => file.flush(),
+                    };
+                    if let Err(e) = sync_res {
+                        error!("CRITICAL AUDIT FAILURE: could not sync audit log: {}", e);
+                    }
                 }
             } else {
-                eprintln!("CRITICAL AUDIT FAILURE: Serialization failed");
+                error!("CRITICAL AUDIT FAILURE: chained entry serialization failed");
             }
         } else {
-            eprintln!(
-                "CRITICAL AUDIT FAILURE: Could not open log file {:?}",
+            error!(
+                "CRITICAL AUDIT FAILURE: could not open log file {:?}",
                 self.file_path
             );
         }

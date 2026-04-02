@@ -8,7 +8,8 @@ use crate::security::keystore::{KeyStore, PeerKeys};
 use crate::security::metrics::SecurityMetrics;
 use crate::security::provider::{SecurityProvider, SoftwareSecurityProvider};
 use crate::{Error, Falcon, Kyber, Result}; // Import Kyber and Falcon from root
-use log::{error, warn};
+use log::{debug, error, info, trace, warn};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 // use heapless::Vec as HeaplessVec;
 use rumqttc::{Client, Event, LastWill, MqttOptions, Packet, QoS};
@@ -16,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 use std::string::{String, ToString};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver};
+use std::sync::mpsc::{sync_channel, Receiver, TrySendError};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::vec::Vec;
@@ -28,6 +29,7 @@ use aes_gcm::{
     Nonce,
 };
 use rand::RngCore;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Encrypted identity file magic prefix.
 ///
@@ -38,13 +40,29 @@ use rand::RngCore;
 /// discriminator for format upgrades and strict parsing.
 const IDENTITY_ENC_MAGIC: &[u8] = b"PQCENC1";
 
+fn is_filesystem_safe_id(id: &str) -> bool {
+    id.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+}
+
+fn storage_id_for(client_id: &str) -> String {
+    // Preserve readable IDs when they are already filesystem-safe and bounded.
+    // Otherwise, hash to avoid traversal/injection via separators/.. components.
+    let is_safe = is_filesystem_safe_id(client_id);
+    if is_safe && client_id.len() <= 128 {
+        client_id.to_string()
+    } else {
+        let digest = Sha256::digest(client_id.as_bytes());
+        format!("id_{}", hex::encode(digest))
+    }
+}
+
 /// Secure MQTT client using post-quantum cryptography
 pub struct SecureMqttClient {
     options: MqttOptions,
     client: Option<Client>,
     // eventloop moved to thread
     // kyber: Kyber, // Removed as unused
-    falcon: Falcon,
     // Own keys
     // secret_key: Vec<u8>, // REMOVED: Using provider
     public_key: Vec<u8>,
@@ -56,6 +74,7 @@ pub struct SecureMqttClient {
     // KeyStore
     keystore: KeyStore,
     client_id: String,
+    storage_id: String,
     sequence_number: u64,
     strict_mode: bool,
     /// Pinned mesh CA public key used to verify OperationalCertificates.
@@ -73,7 +92,7 @@ pub struct SecureMqttClient {
     /// MQTT topic prefix for attestation quotes addressed to this verifier (default "pqc/attest/quote/").
     attest_quote_prefix: String,
     data_dir: std::path::PathBuf,
-    encryption_key: Option<Vec<u8>>,
+    encryption_key: Option<Zeroizing<Vec<u8>>>,
 
     // Observability
     audit_logger: Box<dyn AuditLogger>,
@@ -219,6 +238,16 @@ impl SecureMqttClient {
         // Run FIPS/Compliance Self-Tests on startup
         crate::compliance::run_self_tests()?;
 
+        let storage_id = storage_id_for(client_id);
+        let encryption_key = key.map(Zeroizing::new);
+        if let Some(k) = &encryption_key {
+            if k.len() != 32 {
+                return Err(Error::ClientError(
+                    "Encryption key must be 32 bytes (AES-256)".to_string(),
+                ));
+            }
+        }
+
         let mut options = MqttOptions::new(client_id, broker, port);
         options.set_keep_alive(Duration::from_secs(5)); // Aggressive KeepAlive for faster failure detection
         options.set_clean_session(true);
@@ -231,12 +260,34 @@ impl SecureMqttClient {
         if !data_dir.exists() {
             std::fs::create_dir_all(data_dir).map_err(Error::IoError)?;
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(e) =
+                std::fs::set_permissions(data_dir, std::fs::Permissions::from_mode(0o700))
+            {
+                warn!("failed to set permissions on {:?}: {}", data_dir, e);
+            }
+        }
         let data_dir = data_dir.to_path_buf();
 
-        // Load Identity if exists
-        let identity_path = data_dir.join(format!("identity_{}.json", client_id));
         let mut need_save_identity = false;
         let mut regenerated_x25519 = false;
+        // Load Identity if exists
+        let storage_identity_path = data_dir.join(format!("identity_{}.json", storage_id));
+        let mut identity_path = storage_identity_path.clone();
+        // Legacy path migration: only attempt when client_id is filesystem-safe (no separators).
+        if !storage_identity_path.exists()
+            && is_filesystem_safe_id(client_id)
+            && client_id.len() <= 240
+        {
+            let legacy_identity_path = data_dir.join(format!("identity_{}.json", client_id));
+            if legacy_identity_path.exists() {
+                identity_path = legacy_identity_path;
+                // Migrate to the new storage path on next flush.
+                need_save_identity = true;
+            }
+        }
 
         let (pk, sk, sig_pk, sig_sk, x25519_sk, trust_anchor_ca_sig_pk, operational_cert, seq) =
             if identity_path.exists() {
@@ -254,15 +305,14 @@ impl SecureMqttClient {
                     identity_path
                 );
 
-                let file = std::fs::File::open(&identity_path).map_err(Error::IoError)?;
-                let mut reader = std::io::BufReader::new(file);
+                const MAX_IDENTITY_BYTES: usize = 256 * 1024; // anti-OOM guardrail
+                let buffer = Zeroizing::new(crate::persistence::AtomicFileStore::read_with_limit(
+                    &identity_path,
+                    MAX_IDENTITY_BYTES,
+                )?);
 
                 // If encrypted, decrypt first
-                let own_keys: OwnKeys = if let Some(k) = &key {
-                    use std::io::Read;
-                    let mut buffer = Vec::new();
-                    reader.read_to_end(&mut buffer).map_err(Error::IoError)?;
-
+                let own_keys: OwnKeys = if let Some(k) = &encryption_key {
                     // New format: [MAGIC][nonce:12][ciphertext+tag]
                     // Legacy format: [nonce:12][ciphertext+tag]
                     let (blob, is_magic) = if buffer.starts_with(IDENTITY_ENC_MAGIC) {
@@ -277,45 +327,61 @@ impl SecureMqttClient {
                     }
 
                     let (nonce_bytes, ciphertext) = blob.split_at(12);
-                    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(k));
+                    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(k.as_slice()));
                     let nonce = Nonce::from_slice(nonce_bytes);
 
-                    let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| {
-                        Error::ClientError(
-                            "Decryption failed: Invalid key or corrupted file".to_string(),
-                        )
-                    })?;
+                    let plaintext =
+                        Zeroizing::new(cipher.decrypt(nonce, ciphertext).map_err(|_| {
+                            Error::ClientError(
+                                "Decryption failed: Invalid key or corrupted file".to_string(),
+                            )
+                        })?);
 
                     // Successful legacy decrypt => rewrite with magic prefix on next flush.
                     if !is_magic {
                         need_save_identity = true;
                     }
 
-                    serde_json::from_slice(&plaintext)
+                    serde_json::from_slice(plaintext.as_slice())
                         .map_err(|e| Error::ClientError(format!("Deserialization error: {}", e)))?
                 } else {
-                    serde_json::from_reader(reader).map_err(|e| {
+                    serde_json::from_slice(buffer.as_slice()).map_err(|e| {
                         Error::ClientError(format!("Deserialization error (expected JSON): {}", e))
                     })?
                 };
 
                 // X25519 secret persistence (required for Hybrid KEM decrypt).
+                let OwnKeys {
+                    secret_key,
+                    public_key,
+                    sig_sk,
+                    sig_pk,
+                    x25519_sk,
+                    x25519_pk,
+                    trust_anchor_ca_sig_pk,
+                    operational_cert,
+                    sequence_number,
+                } = own_keys;
+
                 let mut x25519_sk_bytes = [0u8; 32];
-                if own_keys.x25519_sk.len() == 32 {
-                    x25519_sk_bytes.copy_from_slice(&own_keys.x25519_sk);
-                } else {
-                    // Identity files created before hybrid support will not carry an X25519 secret.
-                    // Generate a new one but *invalidate* any existing OperationalCertificate.
-                    regenerated_x25519 = true;
-                    need_save_identity = true;
-                    rand_core::OsRng.fill_bytes(&mut x25519_sk_bytes);
+                {
+                    let x25519_sk = Zeroizing::new(x25519_sk);
+                    if x25519_sk.len() == 32 {
+                        x25519_sk_bytes.copy_from_slice(&x25519_sk);
+                    } else {
+                        // Identity files created before hybrid support will not carry an X25519 secret.
+                        // Generate a new one but *invalidate* any existing OperationalCertificate.
+                        regenerated_x25519 = true;
+                        need_save_identity = true;
+                        rand_core::OsRng.fill_bytes(&mut x25519_sk_bytes);
+                    }
                 }
 
                 let x_secret = x25519_dalek::StaticSecret::from(x25519_sk_bytes);
                 let computed_pk = x25519_dalek::PublicKey::from(&x_secret).to_bytes().to_vec();
 
-                if !own_keys.x25519_pk.is_empty() {
-                    if own_keys.x25519_pk.len() != 32 || own_keys.x25519_pk != computed_pk {
+                if !x25519_pk.is_empty() {
+                    if x25519_pk.len() != 32 || x25519_pk != computed_pk {
                         return Err(Error::ClientError(
                             "Identity x25519_pk mismatch (corrupt file or mixed identities)"
                                 .to_string(),
@@ -327,7 +393,7 @@ impl SecureMqttClient {
                 }
 
                 let operational_cert = if regenerated_x25519 {
-                    if own_keys.operational_cert.is_some() {
+                    if operational_cert.is_some() {
                         warn!(
                         "OperationalCertificate cleared for {}: regenerated x25519 secret invalidates provisioned identity",
                         client_id
@@ -335,18 +401,18 @@ impl SecureMqttClient {
                     }
                     None
                 } else {
-                    own_keys.operational_cert
+                    operational_cert
                 };
 
                 (
-                    own_keys.public_key,
-                    own_keys.secret_key,
-                    own_keys.sig_pk,
-                    own_keys.sig_sk,
+                    public_key,
+                    secret_key,
+                    sig_pk,
+                    sig_sk,
                     x25519_sk_bytes,
-                    own_keys.trust_anchor_ca_sig_pk,
+                    trust_anchor_ca_sig_pk,
                     operational_cert,
-                    own_keys.sequence_number,
+                    sequence_number,
                 )
             } else {
                 // Generate NEW keys
@@ -361,7 +427,21 @@ impl SecureMqttClient {
             };
 
         // Load Keystore
-        let keystore_path = data_dir.join(format!("keystore_{}.json", client_id));
+        let storage_keystore_path = data_dir.join(format!("keystore_{}.json", storage_id));
+        let mut keystore_path = storage_keystore_path.clone();
+        let mut need_flush_keystore = false;
+        // Legacy keystore migration: only attempt when client_id is filesystem-safe (no separators).
+        if !storage_keystore_path.exists()
+            && is_filesystem_safe_id(client_id)
+            && client_id.len() <= 240
+        {
+            let legacy_keystore_path = data_dir.join(format!("keystore_{}.json", client_id));
+            if legacy_keystore_path.exists() {
+                keystore_path = legacy_keystore_path;
+                need_flush_keystore = true;
+            }
+        }
+
         let keystore_path_str = keystore_path.to_str().ok_or(Error::ClientError(
             "Invalid Keystore Path (Non-UTF8)".into(),
         ))?;
@@ -369,15 +449,17 @@ impl SecureMqttClient {
 
         // Instantiate SoftwareSecurityProvider (exportable for identity persistence).
         // X25519 static secret must be pinned to avoid "self-bricking" decryption failures after restart.
+        let mut x25519_sk_bytes = x25519_sk;
         let provider = Arc::new(SoftwareSecurityProvider::new_exportable_with_x25519(
-            sk.clone(),
+            sk,
             pk.clone(),
-            sig_sk.clone(),
+            sig_sk,
             sig_pk.clone(),
-            x25519_sk,
+            x25519_sk_bytes,
         ));
+        x25519_sk_bytes.zeroize();
 
-        let client = SecureMqttClient {
+        let mut client = SecureMqttClient {
             client: None,
             // eventloop: None, // Removed
             options,
@@ -389,6 +471,7 @@ impl SecureMqttClient {
             provider, // Added
             sequence_number: seq,
             client_id: client_id.to_string(),
+            storage_id,
             // Secure by default: reject unknown peers unless explicitly opted out.
             strict_mode: true,
             trust_anchor_ca_sig_pk,
@@ -399,9 +482,8 @@ impl SecureMqttClient {
             attest_challenge_prefix: "pqc/attest/challenge/".to_string(),
             attest_quote_prefix: "pqc/attest/quote/".to_string(),
             data_dir: data_dir.clone(), // Clone here to avoid move
-            encryption_key: key,
+            encryption_key,
             // kyber, // Removed
-            falcon,
             audit_logger: Box::new(ChainedAuditLogger::new(&data_dir)),
             metrics: Arc::new(SecurityMetrics::new()),
             persist_manager: crate::persistence::LazyPersistManager::new(
@@ -412,6 +494,11 @@ impl SecureMqttClient {
             heartbeat: Arc::new(AtomicU64::new(0)),
             key_prefix: "pqc/keys/".to_string(),
         };
+
+        // Migrate legacy keystore to the new storage path (best-effort; atomic write).
+        if need_flush_keystore {
+            client.flush_keystore()?;
+        }
 
         // Persist identity if newly generated or migrated (e.g. backfilled x25519 fields).
         if need_save_identity {
@@ -435,7 +522,7 @@ impl SecureMqttClient {
 
         let x25519_pk = self.provider.x25519_public_key();
 
-        let own_keys = OwnKeys {
+        let mut own_keys = OwnKeys {
             public_key: self.public_key.clone(),
             secret_key: exported.kem_sk,
             sig_pk: self.sig_pk.clone(),
@@ -448,14 +535,16 @@ impl SecureMqttClient {
         };
         let identity_path = self
             .data_dir
-            .join(format!("identity_{}.json", self.client_id));
+            .join(format!("identity_{}.json", self.storage_id));
 
         let data_to_write = if let Some(key) = &self.encryption_key {
             // Encrypt
-            let plaintext = serde_json::to_vec(&own_keys)
-                .map_err(|e| Error::ClientError(format!("Serialization error: {}", e)))?;
+            let plaintext = Zeroizing::new(
+                serde_json::to_vec(&own_keys)
+                    .map_err(|e| Error::ClientError(format!("Serialization error: {}", e)))?,
+            );
 
-            let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+            let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key.as_slice()));
             let mut rng = rand::thread_rng();
             let mut nonce_bytes = [0u8; 12];
             rng.fill_bytes(&mut nonce_bytes);
@@ -477,15 +566,44 @@ impl SecureMqttClient {
             final_blob.extend_from_slice(IDENTITY_ENC_MAGIC);
             final_blob.extend_from_slice(&nonce_bytes);
             final_blob.extend_from_slice(&ciphertext);
-            final_blob
+            Zeroizing::new(final_blob)
         } else {
             // Plain JSON
-            serde_json::to_vec_pretty(&own_keys)
-                .map_err(|e| Error::ClientError(format!("Serialization error: {}", e)))?
+            Zeroizing::new(
+                serde_json::to_vec_pretty(&own_keys)
+                    .map_err(|e| Error::ClientError(format!("Serialization error: {}", e)))?,
+            )
         };
 
         // ATOMIC WRITE
-        AtomicFileStore::write(&identity_path, &data_to_write)?;
+        AtomicFileStore::write(&identity_path, data_to_write.as_slice())?;
+
+        // Best-effort scrubbing of exported secrets (software provider only).
+        own_keys.secret_key.zeroize();
+        own_keys.sig_sk.zeroize();
+        own_keys.x25519_sk.zeroize();
+        Ok(())
+    }
+
+    fn keystore_path(&self) -> std::path::PathBuf {
+        self.data_dir
+            .join(format!("keystore_{}.json", self.storage_id))
+    }
+
+    fn flush_keystore(&mut self) -> Result<()> {
+        let keystore_path = self.keystore_path();
+        let keystore_path_str = keystore_path.to_str().ok_or(Error::ClientError(
+            "Invalid Keystore Path (Non-UTF8)".into(),
+        ))?;
+        self.keystore.save_to_file(keystore_path_str)?;
+        Ok(())
+    }
+
+    fn maybe_flush_keystore(&mut self) -> Result<()> {
+        if self.persist_manager.should_flush() {
+            self.flush_keystore()?;
+            self.persist_manager.notify_flushed();
+        }
         Ok(())
     }
 
@@ -601,10 +719,11 @@ impl SecureMqttClient {
             self.client = Some(client);
 
             // SPAWN THREADED WATCHDOG
-            let (tx, rx) = sync_channel(50);
+            let (tx, rx) = sync_channel(256);
             self.network_recv = Some(rx);
 
             let heartbeat = self.heartbeat.clone();
+            let net_metrics = self.metrics.clone();
 
             thread::spawn(move || {
                 for notification in eventloop.iter() {
@@ -615,20 +734,24 @@ impl SecureMqttClient {
                         .as_secs();
                     heartbeat.store(now, Ordering::Relaxed);
 
-                    if let Ok(Event::Incoming(Packet::Publish(ref p))) = notification {
-                        println!(
-                            "NET_THREAD: Rx Publish on {} (Retain={})",
-                            p.topic, p.retain
-                        );
+                    if let Ok(Event::Incoming(Packet::Publish(p))) = &notification {
+                        trace!("mqtt/net rx publish topic={} retain={}", p.topic, p.retain);
                     }
 
                     // Send to main thread
-                    if tx.send(notification).is_err() {
-                        // Main thread dropped receiver (shutdown)
-                        break;
+                    match tx.try_send(notification) {
+                        Ok(()) => {}
+                        Err(TrySendError::Full(_)) => {
+                            // Hard backpressure: never block the network thread on untrusted input.
+                            // Dropping here is preferable to deadlocking the event loop (which would
+                            // stall keep-alives and cause liveness collapse).
+                            net_metrics.inc_mqtt_rx_queue_drop();
+                            debug!("mqtt/net rx queue full: dropped notification");
+                        }
+                        Err(TrySendError::Disconnected(_)) => break,
                     }
                 }
-                println!("NET_THREAD: Exited!");
+                debug!("mqtt/net thread exited");
             });
 
             // SPAWN HEARTBEAT TELEMETRY THREAD
@@ -650,22 +773,35 @@ impl SecureMqttClient {
                         "client_id": hb_client_id,
                         "decryption_failures": dec_fail,
                         "replay_attacks": rep_atk,
+                        "mqtt_rx_queue_drops": hb_metrics.mqtt_rx_queue_drops.load(Ordering::Relaxed),
                         "current_svn": svn,
                         "integrity": integrity,
                         "ts": SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
                     });
 
                     // Sign the snapshot for "Abyssal" security
-                    let mut payload = serde_json::to_vec(&snapshot).unwrap_or_default();
+                    let mut payload = match serde_json::to_vec(&snapshot) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            error!("heartbeat telemetry JSON serialization failed: {}", e);
+                            continue;
+                        }
+                    };
                     if let Ok(sig) = hb_provider.sign(&payload) {
-                        payload.extend_from_slice(&sig);
-                        let sig_len = sig.len() as u16;
-                        payload.extend_from_slice(&sig_len.to_be_bytes());
+                        if sig.len() > u16::MAX as usize {
+                            error!("heartbeat signature too large: {} bytes", sig.len());
+                        } else {
+                            payload.extend_from_slice(&sig);
+                            let sig_len = sig.len() as u16;
+                            payload.extend_from_slice(&sig_len.to_be_bytes());
+                        }
+                    } else {
+                        warn!("heartbeat telemetry signing failed");
                     }
 
                     let topic = format!("telemetry/security/health/{}", hb_client_id);
                     if let Err(e) = hb_client.publish(topic, QoS::AtLeastOnce, false, payload) {
-                        eprintln!("HEARTBEAT_THREAD: Publish fail: {}", e);
+                        warn!("heartbeat telemetry publish failed: {}", e);
                     }
                 }
             });
@@ -677,7 +813,7 @@ impl SecureMqttClient {
     /// Bootstrap the client: Connect, subscribe to keys, and publish own key.
     pub fn bootstrap(&mut self) -> Result<()> {
         self.ensure_connected()?;
-        println!(
+        info!(
             "SecureMqttClient[{}]: Connected. Subscribing to keys...",
             self.client_id
         );
@@ -688,7 +824,7 @@ impl SecureMqttClient {
             client
                 .subscribe(&subscription_topic, QoS::AtLeastOnce)
                 .map_err(|e| Error::MqttError(e.to_string()))?;
-            println!("SecureMqttClient[{}]: Subscribed.", self.client_id);
+            info!("SecureMqttClient[{}]: Subscribed.", self.client_id);
 
             // Subscribe to attestation topics directed to this client (challenge + quote responses).
             let challenge_topic = format!("{}{}", self.attest_challenge_prefix, self.client_id);
@@ -772,13 +908,9 @@ impl SecureMqttClient {
                 .map_err(|e| Error::MqttError(e.to_string()))?;
 
             // Save keystore (auto-trust self)
-            let keystore_path = self
-                .data_dir
-                .join(format!("keystore_{}.json", self.client_id));
-            let keystore_path_str = keystore_path
-                .to_str()
-                .ok_or(Error::ClientError("Invalid Keystore Path".into()))?;
-            let _ = self.keystore.save_to_file(keystore_path_str);
+            if let Err(e) = self.flush_keystore() {
+                warn!("keystore flush failed: {}", e);
+            }
         }
         Ok(())
     }
@@ -909,7 +1041,7 @@ impl SecureMqttClient {
     }
 
     /// Manually add a trusted peer with their Identity Key (Falcon).
-    pub fn add_trusted_peer(&mut self, client_id: &str, sig_pk: Vec<u8>) {
+    pub fn add_trusted_peer(&mut self, client_id: &str, sig_pk: Vec<u8>) -> Result<()> {
         // Create a placeholder PeerKeys with just the identity key (sig_pk)
         // correct Kyber PK will be filled upon first key exchange if sig_pk matches?
         // Actually, my current logic in poll overwrites keys if they exist.
@@ -935,10 +1067,11 @@ impl SecureMqttClient {
 
         // Cache the peer's keys for future encrypted communications
         self.keystore.insert(client_id, initial_peer_keys);
-        let keystore_path = self
-            .data_dir
-            .join(format!("keystore_{}.json", self.client_id));
-        let _ = self.keystore.save_to_file(keystore_path.to_str().unwrap());
+        // Manual trust changes must be persisted deterministically.
+        self.persist_manager.mark_dirty();
+        self.flush_keystore()?;
+        self.persist_manager.notify_flushed();
+        Ok(())
     }
 
     // ... poll ...
@@ -1044,7 +1177,7 @@ impl SecureMqttClient {
                 if id_len > 0 && id_len < 256 && payload.len() > 2 + id_len + 4 {
                     let (id_bytes, rest) = payload[2..].split_at(id_len);
                     if let Ok(sender_id) = std::str::from_utf8(id_bytes) {
-                        println!("DEBUG: Extracted SenderID: {}", sender_id);
+                        trace!("mqtt rx extracted sender_id={}", sender_id);
                         // Look for signature at end
                         if rest.len() > 2 {
                             let (blob_and_sig, sig_len_bytes) = rest.split_at(rest.len() - 2);
@@ -1056,20 +1189,40 @@ impl SecureMqttClient {
                                     blob_and_sig.split_at(blob_and_sig.len() - sig_len);
 
                                 if let Some(keys) = self.keystore.get(sender_id) {
-                                    if self
-                                        .falcon
-                                        .verify(&keys.sig_pk, encrypted_blob, signature)
-                                        .is_ok()
-                                    {
+                                    if !keys.is_trusted {
+                                        warn!(
+                                            "Dropping encrypted message from untrusted peer: {}",
+                                            sender_id
+                                        );
+                                        return Ok(None);
+                                    }
+
+                                    let is_valid = match verify_falcon_auto(
+                                        &keys.sig_pk,
+                                        encrypted_blob,
+                                        signature,
+                                    ) {
+                                        Ok(v) => v,
+                                        Err(e) => {
+                                            warn!(
+                                                "Signature verification error for {}: {}",
+                                                sender_id, e
+                                            );
+                                            false
+                                        }
+                                    };
+
+                                    if is_valid {
                                         match self.provider.decrypt(encrypted_blob) {
                                             Ok(decrypted) => {
-                                                // Extract Sequence Number (First 8 bytes)
-                                                if decrypted.len() > 8 {
+                                                // Extract Sequence Number (First 8 bytes).
+                                                // Payload may be empty.
+                                                if decrypted.len() >= 8 {
                                                     let (seq_bytes, actual_payload) =
                                                         decrypted.split_at(8);
-                                                    let seq = u64::from_be_bytes(
-                                                        seq_bytes.try_into().unwrap(),
-                                                    );
+                                                    let mut seq_arr = [0u8; 8];
+                                                    seq_arr.copy_from_slice(seq_bytes);
+                                                    let seq = u64::from_be_bytes(seq_arr);
 
                                                     if seq > keys.last_sequence {
                                                         // Update KeyStore with new sequence
@@ -1123,7 +1276,7 @@ impl SecureMqttClient {
                 let sig_len = u16::from_be_bytes([len_bytes[0], len_bytes[1]]) as usize;
                 if rest.len() >= sig_len {
                     let (message, signature) = rest.split_at(rest.len() - sig_len);
-                    if self.falcon.verify(&self.sig_pk, message, signature).is_ok() {
+                    if verify_falcon_auto(&self.sig_pk, message, signature).unwrap_or(false) {
                         return Ok(Some((topic, message.to_vec())));
                     }
                 }
@@ -1229,15 +1382,7 @@ impl SecureMqttClient {
         self.pending_attestation.remove(&msg.subject_id);
 
         self.persist_manager.mark_dirty();
-        if self.persist_manager.should_flush() {
-            let keystore_path = self
-                .data_dir
-                .join(format!("keystore_{}.json", self.client_id));
-            let _ = self
-                .keystore
-                .save_to_file(keystore_path.to_str().unwrap_or(""));
-            self.persist_manager.notify_flushed();
-        }
+        self.maybe_flush_keystore()?;
 
         Ok(())
     }
@@ -1449,15 +1594,7 @@ impl SecureMqttClient {
 
         // Lazy Persistence
         self.persist_manager.mark_dirty();
-        if self.persist_manager.should_flush() {
-            let keystore_path = self
-                .data_dir
-                .join(format!("keystore_{}.json", self.client_id));
-            let _ = self
-                .keystore
-                .save_to_file(keystore_path.to_str().unwrap_or(""));
-            self.persist_manager.notify_flushed();
-        }
+        self.maybe_flush_keystore()?;
 
         self.metrics.inc_success_handshake();
         let event = SecurityEvent::HandshakeSuccess {

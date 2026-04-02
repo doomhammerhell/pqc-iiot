@@ -23,6 +23,9 @@ pub struct SecurityMetrics {
     pub current_svn: AtomicU64,
     /// Integrity Status (1 = OK, 0 = FAILED).
     pub integrity_ok: AtomicU64,
+    /// MQTT notification drops due to bounded channel backpressure.
+    /// This is a signal of overload/DoS conditions and should be monitored.
+    pub mqtt_rx_queue_drops: AtomicU64,
 }
 
 impl Default for SecurityMetrics {
@@ -44,6 +47,7 @@ impl SecurityMetrics {
             rate_limit_drops: AtomicU64::new(0),
             current_svn: AtomicU64::new(0),
             integrity_ok: AtomicU64::new(1), // Assume OK on start
+            mqtt_rx_queue_drops: AtomicU64::new(0),
         }
     }
 
@@ -75,6 +79,11 @@ impl SecurityMetrics {
     /// Increment replay attacks.
     pub fn inc_replay_attack(&self) {
         self.replay_attacks_detected.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment MQTT RX queue drops (bounded channel full).
+    pub fn inc_mqtt_rx_queue_drop(&self) {
+        self.mqtt_rx_queue_drops.fetch_add(1, Ordering::Relaxed);
     }
 }
 

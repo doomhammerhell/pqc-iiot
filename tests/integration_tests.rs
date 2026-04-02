@@ -617,6 +617,94 @@ fn test_malicious_key_announcement_rejected() -> Result<(), Box<dyn std::error::
 }
 
 #[test]
+fn test_encrypted_message_rejects_invalid_signature_even_if_parses(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let port = 29837;
+    common::start_mqtt_broker(port);
+    let suffix: u32 = rand::random();
+
+    let topic = format!("secure/forged_sig_{}", suffix);
+    let victim_id = format!("victim_forged_sig_{}", suffix);
+    let alice_id = format!("alice_forged_sig_{}", suffix);
+
+    // Victim subscribes and pins Alice's identity key.
+    let mut victim = SecureMqttClient::new("localhost", port, &victim_id)?;
+    victim.subscribe(&topic)?;
+
+    let falcon = Falcon::new();
+    let (alice_pk, _alice_sk) = falcon.generate_keypair().expect("alice keygen");
+    victim.add_trusted_peer(&alice_id, alice_pk)?;
+
+    // Craft a valid ciphertext to the victim, but sign with a different key so
+    // Falcon verification returns Ok(false) (must be rejected).
+    let plaintext = b"FORGED_PAYLOAD";
+    let mut attached_payload = Vec::with_capacity(8 + plaintext.len());
+    attached_payload.extend_from_slice(&1u64.to_be_bytes());
+    attached_payload.extend_from_slice(plaintext);
+
+    let encrypted_blob = pqc_iiot::hybrid::encrypt(
+        &victim.get_kem_public_key(),
+        &victim.get_x25519_public_key(),
+        &attached_payload,
+    )?;
+
+    let (_mallory_pk, mallory_sk) = falcon.generate_keypair().expect("mallory keygen");
+    let forged_signature = falcon
+        .sign(&mallory_sk, &encrypted_blob)
+        .expect("mallory sign");
+
+    let sender_id_bytes = alice_id.as_bytes();
+    let sender_id_len = sender_id_bytes.len() as u16;
+    let sig_len = forged_signature.len() as u16;
+
+    let mut message = Vec::new();
+    message.extend_from_slice(&sender_id_len.to_be_bytes());
+    message.extend_from_slice(sender_id_bytes);
+    message.extend_from_slice(&encrypted_blob);
+    message.extend_from_slice(&forged_signature);
+    message.extend_from_slice(&sig_len.to_be_bytes());
+
+    // Publish via raw rumqttc client while driving its connection loop.
+    let mut opts = MqttOptions::new("sig_forge_pub", "localhost", port);
+    opts.set_clean_session(true);
+    let (mut pub_client, mut pub_conn) = RumqttClient::new(opts, 10);
+    let pub_handle = std::thread::spawn(move || {
+        for notification in pub_conn.iter() {
+            if notification.is_err() {
+                break;
+            }
+        }
+    });
+
+    pub_client.publish(topic.clone(), QoS::AtLeastOnce, false, message)?;
+    pub_client.disconnect()?;
+    drop(pub_client);
+    pub_handle.join().expect("publisher thread panicked");
+
+    // Victim must NOT surface the forged payload.
+    let start = Instant::now();
+    let mut received = false;
+    while start.elapsed() < Duration::from_millis(500) {
+        victim.poll(|t, p| {
+            if t == topic && p == plaintext {
+                received = true;
+            }
+        })?;
+        if received {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    assert!(
+        !received,
+        "Victim must reject ciphertext with invalid (Ok(false)) signature"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_key_announcement_binds_peer_id() -> Result<(), Box<dyn std::error::Error>> {
     let port = 29836;
     common::start_mqtt_broker(port);
@@ -969,7 +1057,7 @@ fn test_resource_discovery() -> Result<(), Box<dyn std::error::Error>> {
 
     for resource in resources.iter() {
         let response = client.post(server_addr, resource, b"discover")?;
-        assert!(response.message.payload.len() > 0);
+        assert!(!response.message.payload.is_empty());
     }
 
     Ok(())

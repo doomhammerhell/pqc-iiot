@@ -4,7 +4,9 @@
 
 use crate::{Error, Result};
 use std::fs;
+use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Atomic File Store
@@ -13,6 +15,8 @@ use std::time::{Duration, Instant};
 /// left in a corrupted or truncated state due to power failure.
 pub struct AtomicFileStore;
 
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 impl AtomicFileStore {
     /// Write data to a file atomically.
     ///
@@ -20,20 +24,74 @@ impl AtomicFileStore {
     /// 2. SYNC (fsync) to ensure data is on physical media
     /// 3. RENAME `filename.tmp` to `filename` (Atomic operation)
     pub fn write(path: &Path, data: &[u8]) -> Result<()> {
-        let tmp_path = path.with_extension("tmp");
+        // Create a per-write unique temp file name in the same directory to guarantee atomic rename.
+        // Avoid predictable `.tmp` names to reduce symlink/hardlink clobber attacks in shared dirs.
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("blob");
+        let pid = std::process::id();
 
-        // 1. Write to temp file
-        fs::write(&tmp_path, data).map_err(Error::IoError)?;
+        let mut last_err_kind = None;
+        for _ in 0..32 {
+            let nonce = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let tmp_name = format!(".{}.tmp.{}.{}", file_name, pid, nonce);
+            let tmp_path = parent.join(tmp_name);
 
-        // 2. Sync to disk check
-        let file = fs::File::open(&tmp_path).map_err(Error::IoError)?;
-        file.sync_all().map_err(Error::IoError)?;
-        drop(file); // Close before rename
+            let mut opts = fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
 
-        // 3. Atomic Rename
-        fs::rename(&tmp_path, path).map_err(Error::IoError)?;
+            let mut file = match opts.open(&tmp_path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    last_err_kind = Some(e.kind());
+                    continue;
+                }
+                Err(e) => return Err(Error::IoError(e)),
+            };
 
-        Ok(())
+            // 1. Write to temp file
+            if let Err(e) = file.write_all(data) {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(Error::IoError(e));
+            }
+
+            // 2. Sync temp file contents to disk
+            if let Err(e) = file.sync_all() {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(Error::IoError(e));
+            }
+            drop(file); // Close before rename
+
+            // 3. Atomic Rename (same directory)
+            if let Err(e) = fs::rename(&tmp_path, path) {
+                // Best-effort cleanup on rename failure (e.g., permissions, cross-device).
+                let _ = fs::remove_file(&tmp_path);
+                return Err(Error::IoError(e));
+            }
+
+            // 4. Sync parent directory metadata for durability (POSIX requirement).
+            // Without this, a power loss can roll back the rename even if the file content was synced.
+            #[cfg(unix)]
+            {
+                if let Some(parent) = path.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        let dir = fs::File::open(parent).map_err(Error::IoError)?;
+                        dir.sync_all().map_err(Error::IoError)?;
+                    }
+                }
+            }
+
+            return Ok(());
+        }
+
+        Err(Error::ClientError(format!(
+            "Atomic write failed: could not allocate temp file (last error kind: {:?})",
+            last_err_kind
+        )))
     }
 
     /// Read data from a file with a strict size limit (Anti-OOM).

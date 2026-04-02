@@ -7,7 +7,7 @@
 use crate::crypto::traits::{KeyRotation, Metrics, PqcSignature, SecurityLevel};
 use crate::error::Error;
 use core::fmt;
-use pqcrypto_dilithium::{dilithium2, dilithium3, dilithium5};
+use pqcrypto_mldsa::{mldsa44, mldsa65, mldsa87};
 use pqcrypto_traits::sign::{DetachedSignature, PublicKey, SecretKey};
 
 /// Security levels for Dilithium
@@ -90,15 +90,15 @@ impl PqcSignature for Dilithium {
         // let start = std::time::Instant::now();
         let (pk, sk) = match self.security_level {
             DilithiumSecurityLevel::Level2 => {
-                let (pk, sk) = dilithium2::keypair();
+                let (pk, sk) = mldsa44::keypair();
                 (pk.as_bytes().to_vec(), sk.as_bytes().to_vec())
             }
             DilithiumSecurityLevel::Level3 => {
-                let (pk, sk) = dilithium3::keypair();
+                let (pk, sk) = mldsa65::keypair();
                 (pk.as_bytes().to_vec(), sk.as_bytes().to_vec())
             }
             DilithiumSecurityLevel::Level5 => {
-                let (pk, sk) = dilithium5::keypair();
+                let (pk, sk) = mldsa87::keypair();
                 (pk.as_bytes().to_vec(), sk.as_bytes().to_vec())
             }
         };
@@ -116,19 +116,19 @@ impl PqcSignature for Dilithium {
 
         let signature = match self.security_level {
             DilithiumSecurityLevel::Level2 => {
-                let sk = dilithium2::SecretKey::from_bytes(sk)
+                let sk = mldsa44::SecretKey::from_bytes(sk)
                     .map_err(|e| Error::CryptoError(format!("Invalid secret key: {}", e)))?;
-                dilithium2::detached_sign(msg, &sk).as_bytes().to_vec()
+                mldsa44::detached_sign(msg, &sk).as_bytes().to_vec()
             }
             DilithiumSecurityLevel::Level3 => {
-                let sk = dilithium3::SecretKey::from_bytes(sk)
+                let sk = mldsa65::SecretKey::from_bytes(sk)
                     .map_err(|e| Error::CryptoError(format!("Invalid secret key: {}", e)))?;
-                dilithium3::detached_sign(msg, &sk).as_bytes().to_vec()
+                mldsa65::detached_sign(msg, &sk).as_bytes().to_vec()
             }
             DilithiumSecurityLevel::Level5 => {
-                let sk = dilithium5::SecretKey::from_bytes(sk)
+                let sk = mldsa87::SecretKey::from_bytes(sk)
                     .map_err(|e| Error::CryptoError(format!("Invalid secret key: {}", e)))?;
-                dilithium5::detached_sign(msg, &sk).as_bytes().to_vec()
+                mldsa87::detached_sign(msg, &sk).as_bytes().to_vec()
             }
         };
         // self.metrics.signing_time = start.elapsed();
@@ -140,25 +140,25 @@ impl PqcSignature for Dilithium {
         let _start = std::time::Instant::now();
         let result = match self.security_level {
             DilithiumSecurityLevel::Level2 => {
-                let pk = dilithium2::PublicKey::from_bytes(pk)
+                let pk = mldsa44::PublicKey::from_bytes(pk)
                     .map_err(|e| Error::CryptoError(format!("Invalid public key: {}", e)))?;
-                let sig = dilithium2::DetachedSignature::from_bytes(sig)
+                let sig = mldsa44::DetachedSignature::from_bytes(sig)
                     .map_err(|e| Error::CryptoError(format!("Invalid signature: {}", e)))?;
-                dilithium2::verify_detached_signature(&sig, msg, &pk).is_ok()
+                mldsa44::verify_detached_signature(&sig, msg, &pk).is_ok()
             }
             DilithiumSecurityLevel::Level3 => {
-                let pk = dilithium3::PublicKey::from_bytes(pk)
+                let pk = mldsa65::PublicKey::from_bytes(pk)
                     .map_err(|e| Error::CryptoError(format!("Invalid public key: {}", e)))?;
-                let sig = dilithium3::DetachedSignature::from_bytes(sig)
+                let sig = mldsa65::DetachedSignature::from_bytes(sig)
                     .map_err(|e| Error::CryptoError(format!("Invalid signature: {}", e)))?;
-                dilithium3::verify_detached_signature(&sig, msg, &pk).is_ok()
+                mldsa65::verify_detached_signature(&sig, msg, &pk).is_ok()
             }
             DilithiumSecurityLevel::Level5 => {
-                let pk = dilithium5::PublicKey::from_bytes(pk)
+                let pk = mldsa87::PublicKey::from_bytes(pk)
                     .map_err(|e| Error::CryptoError(format!("Invalid public key: {}", e)))?;
-                let sig = dilithium5::DetachedSignature::from_bytes(sig)
+                let sig = mldsa87::DetachedSignature::from_bytes(sig)
                     .map_err(|e| Error::CryptoError(format!("Invalid signature: {}", e)))?;
-                dilithium5::verify_detached_signature(&sig, msg, &pk).is_ok()
+                mldsa87::verify_detached_signature(&sig, msg, &pk).is_ok()
             }
         };
         // self.metrics.verification_time = start.elapsed();

@@ -10,6 +10,7 @@ use hkdf::Hkdf;
 use rand_core::{CryptoRng, OsRng, RngCore};
 use sha2::Sha256;
 use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey};
+use zeroize::Zeroize;
 
 /// Constants
 const NONCE_SIZE: usize = 12;
@@ -62,7 +63,7 @@ pub fn encrypt_v1<R: RngCore + CryptoRng>(
 
     // 2. Encapsulate -> (Capsule, Kyber Shared Secret)
     // Note: encapsulate returns (ciphertext, shared_secret).
-    let (capsule, kyber_ss) = kyber.encapsulate(target_kem_pk)?;
+    let (capsule, mut kyber_ss) = kyber.encapsulate(target_kem_pk)?;
 
     // 3. X25519 ephemeral-static DH
     // `random_from_rng` takes the RNG by value; reborrow to avoid moving our &mut R.
@@ -71,10 +72,12 @@ pub fn encrypt_v1<R: RngCore + CryptoRng>(
     let mut peer_x_pk = [0u8; 32];
     peer_x_pk.copy_from_slice(target_x25519_pk);
     let peer_pub = X25519PublicKey::from(peer_x_pk);
-    let x_ss = eph_sk.diffie_hellman(&peer_pub).to_bytes();
+    let mut x_ss = eph_sk.diffie_hellman(&peer_pub).to_bytes();
 
     // 4. Derive AEAD key via HKDF(kyber_ss || x25519_ss)
     if kyber_ss.len() != 32 {
+        x_ss.zeroize();
+        kyber_ss.zeroize();
         return Err(Error::CryptoError(format!(
             "Unexpected Kyber shared secret length: {}",
             kyber_ss.len()
@@ -85,8 +88,16 @@ pub fn encrypt_v1<R: RngCore + CryptoRng>(
     ikm[32..].copy_from_slice(&x_ss);
     let hk = Hkdf::<Sha256>::new(None, &ikm);
     let mut key_bytes = [0u8; 32];
-    hk.expand(b"pqc-iiot:hybrid:v1:aes-gcm-key", &mut key_bytes)
-        .map_err(|_| Error::CryptoError("HKDF expand failed".into()))?;
+    let expand_res = hk
+        .expand(b"pqc-iiot:hybrid:v1:aes-gcm-key", &mut key_bytes)
+        .map_err(|_| Error::CryptoError("HKDF expand failed".into()));
+    if let Err(e) = expand_res {
+        key_bytes.zeroize();
+        ikm.zeroize();
+        x_ss.zeroize();
+        kyber_ss.zeroize();
+        return Err(e);
+    }
 
     // 5. Setup AES-GCM
     let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&key_bytes);
@@ -110,7 +121,7 @@ pub fn encrypt_v1<R: RngCore + CryptoRng>(
     packet.extend_from_slice(&eph_pk);
 
     let aad = packet.as_slice();
-    let ciphertext = cipher
+    let ciphertext_res = cipher
         .encrypt(
             nonce,
             Payload {
@@ -118,7 +129,15 @@ pub fn encrypt_v1<R: RngCore + CryptoRng>(
                 aad,
             },
         )
-        .map_err(|_| Error::CryptoError("AES-GCM encryption failed".into()))?;
+        .map_err(|_| Error::CryptoError("AES-GCM encryption failed".into()));
+
+    // Best-effort scrubbing of derived secrets (even if encryption fails).
+    key_bytes.zeroize();
+    ikm.zeroize();
+    x_ss.zeroize();
+    kyber_ss.zeroize();
+
+    let ciphertext = ciphertext_res?;
 
     // 8. Append nonce + ciphertext
     packet.extend_from_slice(&nonce_bytes);
@@ -205,8 +224,9 @@ where
         }
     };
 
-    let kyber_ss = kyber.decapsulate(my_kem_sk, capsule)?;
+    let mut kyber_ss = kyber.decapsulate(my_kem_sk, capsule)?;
     if kyber_ss.len() != 32 {
+        kyber_ss.zeroize();
         return Err(Error::CryptoError(format!(
             "Unexpected Kyber shared secret length: {}",
             kyber_ss.len()
@@ -215,22 +235,31 @@ where
 
     let mut eph_pk = [0u8; 32];
     eph_pk.copy_from_slice(eph_pk_bytes);
-    let x_ss = x25519_exchange(eph_pk)?;
+    let mut x_ss = x25519_exchange(eph_pk)?;
 
     let mut ikm = [0u8; 64];
     ikm[..32].copy_from_slice(&kyber_ss);
     ikm[32..].copy_from_slice(&x_ss);
+    kyber_ss.zeroize();
+    x_ss.zeroize();
+
     let hk = Hkdf::<Sha256>::new(None, &ikm);
     let mut key_bytes = [0u8; 32];
-    hk.expand(b"pqc-iiot:hybrid:v1:aes-gcm-key", &mut key_bytes)
-        .map_err(|_| Error::CryptoError("HKDF expand failed".into()))?;
+    let expand_res = hk
+        .expand(b"pqc-iiot:hybrid:v1:aes-gcm-key", &mut key_bytes)
+        .map_err(|_| Error::CryptoError("HKDF expand failed".into()));
+    if let Err(e) = expand_res {
+        key_bytes.zeroize();
+        ikm.zeroize();
+        return Err(e);
+    }
 
     let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&key_bytes);
     let cipher = Aes256Gcm::new(key);
     let nonce = Nonce::from_slice(nonce_bytes);
 
     let aad = &packet[..header_len];
-    cipher
+    let out_res = cipher
         .decrypt(
             nonce,
             Payload {
@@ -238,7 +267,10 @@ where
                 aad,
             },
         )
-        .map_err(|_| Error::CryptoError("AES-GCM decryption failed".into()))
+        .map_err(|_| Error::CryptoError("AES-GCM decryption failed".into()));
+    key_bytes.zeroize();
+    ikm.zeroize();
+    out_res
 }
 
 fn decrypt_legacy(my_kem_sk: &[u8], packet: &[u8]) -> Result<Vec<u8>> {
@@ -267,13 +299,22 @@ fn decrypt_legacy(my_kem_sk: &[u8], packet: &[u8]) -> Result<Vec<u8>> {
         }
     };
 
-    let shared_secret = kyber.decapsulate(my_kem_sk, capsule)?;
+    let mut shared_secret = kyber.decapsulate(my_kem_sk, capsule)?;
+    if shared_secret.len() != 32 {
+        shared_secret.zeroize();
+        return Err(Error::CryptoError(format!(
+            "Unexpected Kyber shared secret length: {}",
+            shared_secret.len()
+        )));
+    }
 
     let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&shared_secret);
     let cipher = Aes256Gcm::new(key);
     let nonce = Nonce::from_slice(nonce_bytes);
 
-    cipher
+    let out_res = cipher
         .decrypt(nonce, ciphertext)
-        .map_err(|_| Error::CryptoError("AES-GCM decryption failed".into()))
+        .map_err(|_| Error::CryptoError("AES-GCM decryption failed".into()));
+    shared_secret.zeroize();
+    out_res
 }

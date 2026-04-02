@@ -31,11 +31,11 @@ kyber = []
 falcon = []
 
 # PQClean-backed implementations (C toolchain required for non-host targets).
-kyber-pqclean = ["dep:pqcrypto-kyber"]
+kyber-pqclean = ["dep:pqcrypto-mlkem"]
 falcon-pqclean = ["dep:pqcrypto-falcon"]
 
 hqc = ["pqcrypto-hqc"]
-dilithium = ["pqcrypto-dilithium"]
+dilithium = ["dep:pqcrypto-mldsa"]
 saber = ["pqcrypto-saber"]
 
 coap = []
@@ -75,9 +75,11 @@ profile-saber-dilithium = []
 cfg-if = "1.0"
 coap-lite = {version = "0.9", optional = true}
 getrandom = { version = "0.2", default-features = false, features = ["custom"] }
-heapless = "0.7"
+# heapless 0.7 pulls `atomic-polyfill` on some targets (RUSTSEC-2023-0089). 0.9 moved to
+# `portable-atomic`, reducing exposure to unmaintained crates.
+heapless = { version = "0.9.2", default-features = false }
 pqcrypto-falcon = {version = "0.2.10", optional = true, default-features = false}
-pqcrypto-kyber = {version = "0.7.6", optional = true, default-features = false}
+pqcrypto-mlkem = {version = "0.1.1", optional = true, default-features = false}
 pqcrypto-traits = { version = "0.3.4", default-features = false }
 rand_core = {version = "0.6", default-features = false}
 # We use plain TCP MQTT in this project; disable TLS/websocket defaults to reduce attack surface
@@ -91,7 +93,7 @@ zeroize = { version = "1.8.1", default-features = false, features = ["derive", "
 # Post-quantum cryptography dependencies
 subtle = { version = "2.5", default-features = false }
 pqcrypto-hqc = {version = "0.2.2", optional = true, default-features = false}
-pqcrypto-dilithium = {version = "0.5", optional = true, default-features = false}
+pqcrypto-mldsa = {version = "0.1.2", optional = true, default-features = false}
 # pqc-kyber = {version = "0.7", optional = true, default-features = false}
 pqcrypto-saber = {version = "0.1", optional = true, default-features = false}
 
@@ -124,3 +126,10 @@ proptest = "1.10.0"
 
 [package.metadata.docs.rs]
 features = ["std", "config", "profile-kyber-falcon", "profile-saber-dilithium", "profile-kyber-dilithium"]
+
+[patch.crates-io]
+# Narrow the dependency graph for audits:
+# - config's default features enable YAML support via `yaml-rust` (unmaintained). We don't need YAML.
+# - pqcrypto-mldsa uses `paste` (unmaintained) for identifier macros; `pastey` is a maintained drop-in replacement.
+config = { path = "patched-crates/config" }
+pqcrypto-mldsa = { path = "patched-crates/pqcrypto-mldsa" }

@@ -8,8 +8,7 @@ use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
 // ... imports ...
-use std::fs::File;
-use std::io::BufReader;
+use std::path::Path;
 
 /// Structure representing a peer's public keys and security state
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -122,12 +121,13 @@ impl KeyStore {
 
     /// Load the keystore from a file (JSON)
     pub fn load_from_file(path: &str) -> crate::Result<Self> {
-        if !std::path::Path::new(path).exists() {
+        let path = Path::new(path);
+        if !path.exists() {
             return Ok(Self::new());
         }
-        let file = File::open(path).map_err(crate::Error::IoError)?;
-        let reader = BufReader::new(file);
-        let keystore = serde_json::from_reader(reader)
+        const MAX_KEYSTORE_BYTES: usize = 8 * 1024 * 1024; // 8 MiB anti-OOM guardrail
+        let blob = crate::persistence::AtomicFileStore::read_with_limit(path, MAX_KEYSTORE_BYTES)?;
+        let keystore = serde_json::from_slice(&blob)
             .map_err(|e| crate::Error::ClientError(format!("Deserialization error: {}", e)))?;
         Ok(keystore)
     }

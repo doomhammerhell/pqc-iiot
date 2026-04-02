@@ -3,7 +3,7 @@
 use crate::{Error, Result};
 use core::marker::PhantomData;
 use heapless::Vec;
-use pqcrypto_kyber::kyber768;
+use pqcrypto_mlkem::mlkem768;
 use pqcrypto_traits::kem::{Ciphertext, PublicKey, SecretKey, SharedSecret};
 use zeroize::Zeroize;
 
@@ -40,7 +40,7 @@ impl<const N: usize> Kyber<N> {
     pub fn generate_keypair(
         &mut self,
     ) -> Result<(Vec<u8, MAX_PUBLIC_KEY_SIZE>, Vec<u8, MAX_SECRET_KEY_SIZE>)> {
-        let (pk, sk) = kyber768::keypair();
+        let (pk, sk) = mlkem768::keypair();
         let mut public_key = Vec::new();
         let mut secret_key = Vec::new();
 
@@ -62,9 +62,9 @@ impl<const N: usize> Kyber<N> {
         &mut self,
         public_key: &[u8],
     ) -> Result<(Vec<u8, MAX_CIPHERTEXT_SIZE>, Vec<u8, SHARED_SECRET_SIZE>)> {
-        let pk = kyber768::PublicKey::from_bytes(public_key)
+        let pk = mlkem768::PublicKey::from_bytes(public_key)
             .map_err(|_| Error::InvalidInput("Invalid public key".to_string()))?;
-        let (ss, ct) = kyber768::encapsulate(&pk);
+        let (ss, ct) = mlkem768::encapsulate(&pk);
         let ciphertext: Vec<u8, MAX_CIPHERTEXT_SIZE> =
             Vec::from_slice(ct.as_bytes()).map_err(|_| Error::BufferTooSmall)?;
         let shared_secret: Vec<u8, SHARED_SECRET_SIZE> =
@@ -81,11 +81,11 @@ impl<const N: usize> Kyber<N> {
         secret_key: &[u8],
         ciphertext: &[u8],
     ) -> Result<Vec<u8, SHARED_SECRET_SIZE>> {
-        let sk = kyber768::SecretKey::from_bytes(secret_key)
+        let sk = mlkem768::SecretKey::from_bytes(secret_key)
             .map_err(|_| Error::InvalidInput("Invalid secret key".to_string()))?;
-        let ct = kyber768::Ciphertext::from_bytes(ciphertext)
+        let ct = mlkem768::Ciphertext::from_bytes(ciphertext)
             .map_err(|_| Error::InvalidInput("Invalid ciphertext".to_string()))?;
-        let ss = kyber768::decapsulate(&ct, &sk);
+        let ss = mlkem768::decapsulate(&ct, &sk);
         let mut shared_secret = Vec::new();
 
         shared_secret

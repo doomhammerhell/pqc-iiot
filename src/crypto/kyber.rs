@@ -160,15 +160,15 @@ impl Metrics for Kyber {
 fn kyber_generate_keypair(security_level: KyberSecurityLevel) -> Result<(Vec<u8>, Vec<u8>), Error> {
     let (pk, sk) = match security_level {
         KyberSecurityLevel::Kyber512 => {
-            let (pk, sk) = pqcrypto_kyber::kyber512::keypair();
+            let (pk, sk) = pqcrypto_mlkem::mlkem512::keypair();
             (pk.as_bytes().to_vec(), sk.as_bytes().to_vec())
         }
         KyberSecurityLevel::Kyber768 => {
-            let (pk, sk) = pqcrypto_kyber::kyber768::keypair();
+            let (pk, sk) = pqcrypto_mlkem::mlkem768::keypair();
             (pk.as_bytes().to_vec(), sk.as_bytes().to_vec())
         }
         KyberSecurityLevel::Kyber1024 => {
-            let (pk, sk) = pqcrypto_kyber::kyber1024::keypair();
+            let (pk, sk) = pqcrypto_mlkem::mlkem1024::keypair();
             (pk.as_bytes().to_vec(), sk.as_bytes().to_vec())
         }
     };
@@ -191,21 +191,21 @@ fn kyber_encapsulate(
 ) -> Result<(Vec<u8>, Vec<u8>), Error> {
     let (ss, ct) = match security_level {
         KyberSecurityLevel::Kyber512 => {
-            let pk = pqcrypto_kyber::kyber512::PublicKey::from_bytes(pk)
+            let pk = pqcrypto_mlkem::mlkem512::PublicKey::from_bytes(pk)
                 .map_err(|e| Error::CryptoError(format!("Invalid public key: {}", e)))?;
-            let (ss, ct) = pqcrypto_kyber::kyber512::encapsulate(&pk);
+            let (ss, ct) = pqcrypto_mlkem::mlkem512::encapsulate(&pk);
             (ss.as_bytes().to_vec(), ct.as_bytes().to_vec())
         }
         KyberSecurityLevel::Kyber768 => {
-            let pk = pqcrypto_kyber::kyber768::PublicKey::from_bytes(pk)
+            let pk = pqcrypto_mlkem::mlkem768::PublicKey::from_bytes(pk)
                 .map_err(|e| Error::CryptoError(format!("Invalid public key: {}", e)))?;
-            let (ss, ct) = pqcrypto_kyber::kyber768::encapsulate(&pk);
+            let (ss, ct) = pqcrypto_mlkem::mlkem768::encapsulate(&pk);
             (ss.as_bytes().to_vec(), ct.as_bytes().to_vec())
         }
         KyberSecurityLevel::Kyber1024 => {
-            let pk = pqcrypto_kyber::kyber1024::PublicKey::from_bytes(pk)
+            let pk = pqcrypto_mlkem::mlkem1024::PublicKey::from_bytes(pk)
                 .map_err(|e| Error::CryptoError(format!("Invalid public key: {}", e)))?;
-            let (ss, ct) = pqcrypto_kyber::kyber1024::encapsulate(&pk);
+            let (ss, ct) = pqcrypto_mlkem::mlkem1024::encapsulate(&pk);
             (ss.as_bytes().to_vec(), ct.as_bytes().to_vec())
         }
     };
@@ -230,29 +230,29 @@ fn kyber_decapsulate(
 ) -> Result<Vec<u8>, Error> {
     let ss = match security_level {
         KyberSecurityLevel::Kyber512 => {
-            let sk = pqcrypto_kyber::kyber512::SecretKey::from_bytes(sk)
+            let sk = pqcrypto_mlkem::mlkem512::SecretKey::from_bytes(sk)
                 .map_err(|e| Error::CryptoError(format!("Invalid secret key: {}", e)))?;
-            let ct = pqcrypto_kyber::kyber512::Ciphertext::from_bytes(ct)
+            let ct = pqcrypto_mlkem::mlkem512::Ciphertext::from_bytes(ct)
                 .map_err(|e| Error::CryptoError(format!("Invalid ciphertext: {}", e)))?;
-            pqcrypto_kyber::kyber512::decapsulate(&ct, &sk)
+            pqcrypto_mlkem::mlkem512::decapsulate(&ct, &sk)
                 .as_bytes()
                 .to_vec()
         }
         KyberSecurityLevel::Kyber768 => {
-            let sk = pqcrypto_kyber::kyber768::SecretKey::from_bytes(sk)
+            let sk = pqcrypto_mlkem::mlkem768::SecretKey::from_bytes(sk)
                 .map_err(|e| Error::CryptoError(format!("Invalid secret key: {}", e)))?;
-            let ct = pqcrypto_kyber::kyber768::Ciphertext::from_bytes(ct)
+            let ct = pqcrypto_mlkem::mlkem768::Ciphertext::from_bytes(ct)
                 .map_err(|e| Error::CryptoError(format!("Invalid ciphertext: {}", e)))?;
-            pqcrypto_kyber::kyber768::decapsulate(&ct, &sk)
+            pqcrypto_mlkem::mlkem768::decapsulate(&ct, &sk)
                 .as_bytes()
                 .to_vec()
         }
         KyberSecurityLevel::Kyber1024 => {
-            let sk = pqcrypto_kyber::kyber1024::SecretKey::from_bytes(sk)
+            let sk = pqcrypto_mlkem::mlkem1024::SecretKey::from_bytes(sk)
                 .map_err(|e| Error::CryptoError(format!("Invalid secret key: {}", e)))?;
-            let ct = pqcrypto_kyber::kyber1024::Ciphertext::from_bytes(ct)
+            let ct = pqcrypto_mlkem::mlkem1024::Ciphertext::from_bytes(ct)
                 .map_err(|e| Error::CryptoError(format!("Invalid ciphertext: {}", e)))?;
-            pqcrypto_kyber::kyber1024::decapsulate(&ct, &sk)
+            pqcrypto_mlkem::mlkem1024::decapsulate(&ct, &sk)
                 .as_bytes()
                 .to_vec()
         }
