@@ -158,7 +158,10 @@ use sha2::{Digest, Sha256};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::Mutex;
+
+use crate::security::provider::SecurityProvider;
 
 /// Cryptographically Chained Log Entry (Tamper-Evident).
 /// Forms a hash chain where `hash_n = SHA256(hash_{n-1} + entry_n)`.
@@ -170,6 +173,10 @@ pub struct ChainedLogEntry {
     pub entry: AuditLog,
     /// The hash of this entry (including prev_hash).
     pub hash: String, // SHA256(prev_hash + json(entry))
+    /// Optional device signature over this entry's chain hash (for tamper evidence without trusting filesystem).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(with = "crate::security::keystore::base64_serde_opt")]
+    pub signature: Option<Vec<u8>>,
 }
 
 /// Audit Logger that enforces specific ordering and integrity via Hash Chaining.
@@ -177,21 +184,34 @@ pub struct ChainedLogEntry {
 pub struct ChainedAuditLogger {
     file_path: PathBuf,
     last_hash: Mutex<String>,
+    signer: Option<Arc<dyn SecurityProvider>>,
 }
 
 impl ChainedAuditLogger {
     /// Initialize the Chained Logger, recovering the last hash from disk if available.
     pub fn new(data_dir: &std::path::Path) -> Self {
+        Self::new_inner(data_dir, None)
+    }
+
+    /// Initialize the Chained Logger with a signer.
+    ///
+    /// When a signer is provided (TPM/HSM-backed in production), each entry is signed, making
+    /// offline log rewriting detectable without trusting filesystem permissions.
+    pub fn new_signed(data_dir: &std::path::Path, signer: Arc<dyn SecurityProvider>) -> Self {
+        Self::new_inner(data_dir, Some(signer))
+    }
+
+    fn new_inner(data_dir: &std::path::Path, signer: Option<Arc<dyn SecurityProvider>>) -> Self {
         let file_path = data_dir.join("audit.log");
 
-        // Recover last hash from file if exists, else generic genesis hash
-        // Efficiently read from end of file
+        // Recover last hash from file if exists, else generic genesis hash.
+        // Efficiently read from end of file.
         let last_hash = if file_path.exists() {
             use std::io::{Read, Seek, SeekFrom};
             if let Ok(mut file) = std::fs::File::open(&file_path) {
                 if let Ok(len) = file.metadata().map(|m| m.len()) {
                     if len > 0 {
-                        // Seek to end - 1024 bytes (heuristic for last line) or less
+                        // Seek to end - 4096 bytes (heuristic for last line) or less
                         let seek_back = std::cmp::min(len, 4096);
                         if file.seek(SeekFrom::End(-(seek_back as i64))).is_ok() {
                             let mut buffer = std::vec::Vec::new();
@@ -231,6 +251,7 @@ impl ChainedAuditLogger {
         Self {
             file_path,
             last_hash: Mutex::new(last_hash),
+            signer,
         }
     }
 }
@@ -261,13 +282,33 @@ impl AuditLogger for ChainedAuditLogger {
         let mut hasher = Sha256::new();
         hasher.update(last_hash_guard.as_bytes());
         hasher.update(entry_json.as_bytes());
-        let new_hash = hex::encode(hasher.finalize());
+        let chain_hash_bytes: [u8; 32] = hasher.finalize().into();
+        let new_hash = hex::encode(chain_hash_bytes);
+
+        // Optional signature for tamper evidence without trusting filesystem permissions.
+        // This is only meaningful when the signer is backed by non-exportable keys (TPM/HSM).
+        let signature = if let Some(signer) = &self.signer {
+            let mut sig_hasher = Sha256::new();
+            sig_hasher.update(b"pqc-iiot:audit-sig:v1");
+            sig_hasher.update(chain_hash_bytes);
+            let sig_digest = sig_hasher.finalize();
+            match signer.sign(sig_digest.as_slice()) {
+                Ok(sig) => Some(sig),
+                Err(e) => {
+                    error!("CRITICAL AUDIT FAILURE: audit entry signing failed: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         // 3. Create Chained Entry
         let chained = ChainedLogEntry {
             prev_hash: last_hash_guard.clone(),
             entry,
             hash: new_hash.clone(),
+            signature,
         };
 
         // 4. Atomic Write to Disk (Append)

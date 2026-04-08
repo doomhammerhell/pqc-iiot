@@ -10,12 +10,28 @@ use pqcrypto_falcon::falcon512::{
 use pqcrypto_traits::sign::{DetachedSignature, SecretKey as _};
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 
-fn sealed_blob_path(label: &str) -> std::path::PathBuf {
+fn ensure_pqc_data_dir() -> Result<()> {
+    let dir = Path::new("pqc-data");
+    if !dir.exists() {
+        std::fs::create_dir_all(dir).map_err(Error::IoError)?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) {
+            return Err(Error::IoError(e));
+        }
+    }
+    Ok(())
+}
+
+fn sealed_blob_path(label: &str) -> PathBuf {
     // Never use `label` as a path fragment directly: it may carry path separators and trigger
     // traversal/overwrite. Hash it into a stable, filesystem-safe name.
     let digest = Sha256::digest(label.as_bytes());
-    std::path::PathBuf::from(format!("pqc_sealed_{}.bin", hex::encode(digest)))
+    Path::new("pqc-data").join(format!("sealed_{}.bin", hex::encode(digest)))
 }
 
 /// Trait for abstracting cryptographic operations.
@@ -51,6 +67,35 @@ pub trait SecurityProvider: Send + Sync {
     /// Export identity secret keys if allowed by the provider.
     /// Returns None for hardware providers (TPM/HSM).
     fn export_secret_keys(&self) -> Option<ExportedIdentitySecrets>;
+
+    /// Human-readable provider kind for observability.
+    ///
+    /// This is intended for logging/telemetry, not for security decisions.
+    fn provider_kind(&self) -> &'static str {
+        "unknown"
+    }
+
+    /// Whether the provider's sealing backend is rollback-resistant.
+    ///
+    /// Security meaning:
+    /// - `true`: `seal_data/unseal_data` are backed by a primitive that an attacker with filesystem
+    ///   write access cannot roll back (e.g., TPM NV, TEE monotonic counter + sealed storage, WORM
+    ///   remote append-only service).
+    /// - `false`: persistence is best-effort and can be rolled back by restoring old blobs.
+    ///
+    /// This flag is used to make threat-model assumptions explicit. It does not imply secrecy
+    /// (confidentiality) by itself.
+    fn is_rollback_resistant_storage(&self) -> bool {
+        false
+    }
+
+    /// Whether long-term identity secrets are non-exportable.
+    ///
+    /// For software providers, secret keys may still be exfiltrated by a host compromise; this
+    /// function only indicates whether the provider is willing to export them via the API.
+    fn is_identity_non_exportable(&self) -> bool {
+        self.export_secret_keys().is_none()
+    }
 
     /// Seal data to persistent storage (e.g. encrypted with Root Key if available).
     fn seal_data(&self, label: &str, data: &[u8]) -> Result<()>;
@@ -223,7 +268,12 @@ impl SecurityProvider for SoftwareSecurityProvider {
         }
     }
 
+    fn provider_kind(&self) -> &'static str {
+        "software"
+    }
+
     fn seal_data(&self, label: &str, data: &[u8]) -> Result<()> {
+        ensure_pqc_data_dir()?;
         let path = sealed_blob_path(label);
         let key = self.sealing_key(label);
         let cipher = Aes256Gcm::new(&key);
@@ -246,12 +296,20 @@ impl SecurityProvider for SoftwareSecurityProvider {
     fn unseal_data(&self, label: &str) -> Result<Vec<u8>> {
         const MAX_SEALED_BYTES: usize = 1024 * 1024; // 1 MiB anti-OOM guardrail
 
+        // If the directory does not exist, behave as if the blob is missing.
+        if !Path::new("pqc-data").exists() {
+            return Err(crate::Error::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "pqc-data missing",
+            )));
+        }
+
         let path = sealed_blob_path(label);
         let blob =
             match crate::persistence::AtomicFileStore::read_with_limit(&path, MAX_SEALED_BYTES) {
                 Ok(b) => b,
                 Err(crate::Error::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                    return Err(crate::Error::CryptoError("Sealed data not found".into()));
+                    return Err(crate::Error::IoError(e));
                 }
                 Err(e) => return Err(e),
             };

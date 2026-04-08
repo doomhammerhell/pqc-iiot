@@ -35,6 +35,12 @@ pub struct PeerKeys {
     /// Last seen sequence number for replay protection
     #[serde(default)] // Default to 0 for compatibility
     pub last_sequence: u64,
+    /// Sliding replay window bitmap relative to `last_sequence`.
+    ///
+    /// Bit `i` corresponds to sequence `last_sequence - i` for `i in 0..64`.
+    /// This enables bounded out-of-order delivery while still rejecting replays.
+    #[serde(default)]
+    pub replay_window: u64,
     /// Whether this peer is trusted (Identity Verified)
     #[serde(default)] // Default to false
     pub is_trusted: bool,
@@ -52,10 +58,20 @@ pub struct PeerKeys {
 pub struct KeyStore {
     // Map client_id -> PeerKeys
     keys: std::collections::HashMap<std::string::String, PeerKeys>,
+    /// Monotonic generation counter used for rollback detection.
+    ///
+    /// This value is persisted inside the keystore file and is expected to match a sealed counter
+    /// stored behind `SecurityProvider::seal_data`. In deployments with a TPM/HSM-backed provider,
+    /// this becomes a hard anti-rollback primitive for replay state and revocation state.
+    #[serde(default)]
+    generation: u64,
     /// Local revocation list: peer_id -> key_ids (opaque 16-byte identifiers).
     /// Used to prevent rollback to compromised identities and to support emergency revocation.
     #[serde(default)]
     revoked: std::collections::HashMap<std::string::String, Vec<Vec<u8>>>,
+    /// Monotonic revocation sequence applied to this keystore (anti-rollback/replay for CRL updates).
+    #[serde(default)]
+    revocation_seq: u64,
 }
 
 impl Default for KeyStore {
@@ -69,8 +85,26 @@ impl KeyStore {
     pub fn new() -> Self {
         Self {
             keys: std::collections::HashMap::new(),
+            generation: 0,
             revoked: std::collections::HashMap::new(),
+            revocation_seq: 0,
         }
+    }
+
+    /// Current persisted generation counter.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Set the persisted generation counter.
+    pub fn set_generation(&mut self, generation: u64) {
+        self.generation = generation;
+    }
+
+    /// Bump the persisted generation counter, saturating on overflow.
+    pub fn bump_generation(&mut self) -> u64 {
+        self.generation = self.generation.saturating_add(1);
+        self.generation
     }
 
     /// Insert a peer into the store.
@@ -107,6 +141,16 @@ impl KeyStore {
             .get(client_id)
             .map(|list| list.iter().any(|k| k.as_slice() == key_id))
             .unwrap_or(false)
+    }
+
+    /// Current monotonic revocation sequence applied to this keystore.
+    pub fn revocation_seq(&self) -> u64 {
+        self.revocation_seq
+    }
+
+    /// Set the revocation sequence applied to this keystore.
+    pub fn set_revocation_seq(&mut self, seq: u64) {
+        self.revocation_seq = seq;
     }
 
     /// Save the keystore to a file (JSON)

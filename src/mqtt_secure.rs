@@ -6,8 +6,13 @@ use crate::security::audit::{AuditLog, AuditLogger, ChainedAuditLogger, Security
 use crate::security::hybrid;
 use crate::security::keystore::{KeyStore, PeerKeys};
 use crate::security::metrics::SecurityMetrics;
+use crate::security::monotonic::{seal_u64, unseal_u64};
+use crate::security::policy::FleetPolicyUpdate;
 use crate::security::provider::{SecurityProvider, SoftwareSecurityProvider};
-use crate::{Error, Falcon, Kyber, Result}; // Import Kyber and Falcon from root
+use crate::security::revocation::RevocationUpdate;
+use crate::security::time::SecureTimeFloor;
+use crate::{Error, Falcon, Kyber, KyberSecurityLevel, Result}; // Import Kyber and Falcon from root
+use hkdf::Hkdf;
 use log::{debug, error, info, trace, warn};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -19,7 +24,7 @@ use std::string::{String, ToString};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, TrySendError};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::vec::Vec;
 
 use aes_gcm::{
@@ -28,7 +33,9 @@ use aes_gcm::{
     Key, // Or wrappers
     Nonce,
 };
+use rand::rngs::OsRng;
 use rand::RngCore;
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519StaticSecret};
 use zeroize::{Zeroize, Zeroizing};
 
 /// Encrypted identity file magic prefix.
@@ -40,9 +47,150 @@ use zeroize::{Zeroize, Zeroizing};
 /// discriminator for format upgrades and strict parsing.
 const IDENTITY_ENC_MAGIC: &[u8] = b"PQCENC1";
 
+/// Maximum peer/client identifier length accepted on-wire (MQTT topic suffix + message prefix).
+///
+/// This is a hard DoS containment limit: peer IDs are used as hashmap keys and show up in
+/// logs/metrics. Allowing unbounded IDs turns the broker into a cardinality amplifier.
+const MAX_WIRE_ID_LEN: usize = 128;
+
+/// Default maximum accepted bytes for key announcements (`pqc/keys/<peer>` payload).
+const DEFAULT_MAX_KEY_ANNOUNCEMENT_BYTES: usize = 64 * 1024;
+
+/// Default maximum accepted bytes for attestation messages (challenge/quote JSON payloads).
+const DEFAULT_MAX_ATTESTATION_BYTES: usize = 32 * 1024;
+
+/// Default maximum accepted bytes for encrypted messages (wire packet).
+const DEFAULT_MAX_ENCRYPTED_MESSAGE_BYTES: usize = 256 * 1024;
+
+/// Default maximum accepted bytes for revocation updates.
+const DEFAULT_MAX_REVOCATION_BYTES: usize = 128 * 1024;
+
+/// Default maximum accepted bytes for fleet policy updates.
+const DEFAULT_MAX_POLICY_BYTES: usize = 64 * 1024;
+
+/// Default maximum accepted bytes for MQTT session-init/response control messages.
+const DEFAULT_MAX_SESSION_BYTES: usize = 64 * 1024;
+
+/// Default MQTT topic prefix for session initiation messages addressed to a peer.
+const DEFAULT_SESSION_INIT_PREFIX: &str = "pqc/session/init/";
+
+/// Default MQTT topic prefix for session responses addressed to a peer.
+const DEFAULT_SESSION_RESP_PREFIX: &str = "pqc/session/resp/";
+
+/// Default MQTT topic for fleet policy updates.
+const DEFAULT_POLICY_TOPIC: &str = "pqc/policy/v1";
+
+/// Default token bucket limits for expensive cryptographic verification work.
+///
+/// These values are intentionally conservative to protect CPU under sustained adversarial load.
+/// For safety/security-critical deployments, tune them based on device class and expected fleet traffic.
+const DEFAULT_SIGVERIFY_BUDGET_CAPACITY: u32 = 40;
+const DEFAULT_SIGVERIFY_BUDGET_REFILL_PER_SEC: u32 = 20;
+
+/// Default token bucket limits for expensive decryption/KEM work.
+const DEFAULT_DECRYPT_BUDGET_CAPACITY: u32 = 20;
+const DEFAULT_DECRYPT_BUDGET_REFILL_PER_SEC: u32 = 10;
+
+/// Global budget caps protect against sender-id cardinality attacks (many spoofed IDs).
+const DEFAULT_GLOBAL_SIGVERIFY_BUDGET_CAPACITY: u32 = 200;
+const DEFAULT_GLOBAL_SIGVERIFY_BUDGET_REFILL_PER_SEC: u32 = 100;
+const DEFAULT_GLOBAL_DECRYPT_BUDGET_CAPACITY: u32 = 80;
+const DEFAULT_GLOBAL_DECRYPT_BUDGET_REFILL_PER_SEC: u32 = 40;
+
+const DEFAULT_BUDGET_MAX_PEERS: usize = 10_000;
+
+/// Fixed-rate token bucket.
+#[derive(Debug, Clone)]
+struct TokenBucket {
+    tokens: u32,
+    last_refill: Instant,
+    capacity: u32,
+    refill_rate_per_sec: u32,
+}
+
+impl TokenBucket {
+    fn new(capacity: u32, refill_rate_per_sec: u32) -> Self {
+        Self {
+            tokens: capacity,
+            last_refill: Instant::now(),
+            capacity,
+            refill_rate_per_sec,
+        }
+    }
+
+    fn allow(&mut self) -> bool {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_refill).as_secs() as u32;
+        if elapsed > 0 {
+            self.tokens = std::cmp::min(
+                self.capacity,
+                self.tokens + elapsed * self.refill_rate_per_sec,
+            );
+            self.last_refill = now;
+        }
+
+        if self.tokens > 0 {
+            self.tokens -= 1;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Per-peer token buckets with a hard cap on tracked peers.
+#[derive(Debug, Clone)]
+struct TokenBucketMap {
+    peers: std::collections::HashMap<String, (u32, Instant)>,
+    capacity: u32,
+    refill_rate_per_sec: u32,
+    max_peers: usize,
+}
+
+impl TokenBucketMap {
+    fn new(capacity: u32, refill_rate_per_sec: u32, max_peers: usize) -> Self {
+        Self {
+            peers: std::collections::HashMap::new(),
+            capacity,
+            refill_rate_per_sec,
+            max_peers,
+        }
+    }
+
+    fn allow(&mut self, peer_id: &str) -> bool {
+        if self.peers.len() > self.max_peers {
+            // Nuclear option under cardinality attack: drop state to bound memory.
+            self.peers.clear();
+        }
+
+        let now = Instant::now();
+        let (tokens, last_refill) = self
+            .peers
+            .entry(peer_id.to_string())
+            .or_insert((self.capacity, now));
+
+        let elapsed = now.duration_since(*last_refill).as_secs() as u32;
+        if elapsed > 0 {
+            *tokens = std::cmp::min(self.capacity, *tokens + elapsed * self.refill_rate_per_sec);
+            *last_refill = now;
+        }
+
+        if *tokens > 0 {
+            *tokens -= 1;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 fn is_filesystem_safe_id(id: &str) -> bool {
     id.bytes()
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+}
+
+fn is_valid_wire_peer_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= MAX_WIRE_ID_LEN && is_filesystem_safe_id(id)
 }
 
 fn storage_id_for(client_id: &str) -> String {
@@ -77,6 +225,8 @@ pub struct SecureMqttClient {
     storage_id: String,
     sequence_number: u64,
     strict_mode: bool,
+    /// If true, disallow v1 per-message hybrid encryption and require session/ratchet (v2).
+    require_sessions: bool,
     /// Pinned mesh CA public key used to verify OperationalCertificates.
     trust_anchor_ca_sig_pk: Option<Vec<u8>>,
     /// This device's OperationalCertificate (factory -> operational).
@@ -105,6 +255,33 @@ pub struct SecureMqttClient {
     network_recv: Option<Receiver<std::result::Result<Event, rumqttc::ConnectionError>>>, // Receive events from thread
     heartbeat: Arc<AtomicU64>,
     key_prefix: String,
+
+    // Hard limits (DoS containment)
+    max_key_announcement_bytes: usize,
+    max_attestation_bytes: usize,
+    max_encrypted_message_bytes: usize,
+    max_revocation_bytes: usize,
+    revocation_topic: String,
+    max_policy_bytes: usize,
+    policy_topic: String,
+    fleet_policy: Option<FleetPolicyUpdate>,
+
+    // Asymmetric-cost DoS budgets (token buckets).
+    sig_verify_budget: TokenBucketMap,
+    decrypt_budget: TokenBucketMap,
+    global_sig_verify_budget: TokenBucket,
+    global_decrypt_budget: TokenBucket,
+
+    // Secure time (best-effort monotonic floor)
+    secure_time: SecureTimeFloor,
+
+    // Session + ratchet (forward secrecy / PCS building block)
+    max_session_bytes: usize,
+    session_init_prefix: String,
+    session_resp_prefix: String,
+    pending_sessions: std::collections::HashMap<[u8; 16], PendingSessionInit>,
+    sessions: std::collections::HashMap<String, MqttSession>,
+    session_resp_cache: std::collections::HashMap<String, CachedSessionResponse>,
 }
 
 use crate::persistence::AtomicFileStore;
@@ -137,6 +314,59 @@ struct OwnKeys {
 }
 
 #[derive(Serialize, Deserialize)]
+struct SealedIdentityMeta {
+    version: u8,
+    /// Optional pinned CA public key (Falcon) used for provisioning-backed trust.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(with = "crate::security::keystore::base64_serde_opt")]
+    trust_anchor_ca_sig_pk: Option<Vec<u8>>,
+    /// This device's OperationalCertificate (factory -> operational).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    operational_cert: Option<OperationalCertificate>,
+    /// Outbound message sequence number (must be >= 1).
+    sequence_number: u64,
+}
+
+impl SealedIdentityMeta {
+    const VERSION_V1: u8 = 1;
+}
+
+fn identity_meta_label_for(storage_id: &str) -> String {
+    format!("pqc-iiot:identity-meta:v1:{}", storage_id)
+}
+
+fn load_sealed_identity_meta(
+    provider: &Arc<dyn SecurityProvider>,
+    storage_id: &str,
+) -> Result<(SealedIdentityMeta, bool)> {
+    let label = identity_meta_label_for(storage_id);
+    match provider.unseal_data(&label) {
+        Ok(blob) => {
+            let meta: SealedIdentityMeta = serde_json::from_slice(&blob).map_err(|e| {
+                Error::ClientError(format!("Invalid sealed identity meta ({}): {}", label, e))
+            })?;
+            if meta.version != SealedIdentityMeta::VERSION_V1 {
+                return Err(Error::ProtocolError(format!(
+                    "Unsupported identity meta version: {}",
+                    meta.version
+                )));
+            }
+            Ok((meta, false))
+        }
+        Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok((
+            SealedIdentityMeta {
+                version: SealedIdentityMeta::VERSION_V1,
+                trust_anchor_ca_sig_pk: None,
+                operational_cert: None,
+                sequence_number: 1,
+            },
+            true,
+        )),
+        Err(e) => Err(e),
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 struct AttestationChallenge {
     verifier_id: String,
     #[serde(with = "crate::security::keystore::base64_serde")]
@@ -148,6 +378,390 @@ struct AttestationChallenge {
 struct AttestationQuoteMessage {
     subject_id: String,
     quote: crate::attestation::quote::AttestationQuote,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SessionInitMessage {
+    version: u8,
+    initiator_id: String,
+    responder_id: String,
+    /// 16-byte session identifier (random, unique per handshake).
+    #[serde(with = "crate::security::keystore::base64_serde")]
+    session_id: Vec<u8>,
+    /// Monotonic per-peer sequence number (anti-replay / anti-downgrade for session init).
+    session_seq: u64,
+    /// Initiator ephemeral Kyber public key.
+    #[serde(with = "crate::security::keystore::base64_serde")]
+    kem_pk: Vec<u8>,
+    /// Initiator ephemeral X25519 public key (32 bytes).
+    #[serde(with = "crate::security::keystore::base64_serde")]
+    x25519_pk: Vec<u8>,
+    /// Informational timestamp (unix seconds) from the initiator.
+    ts: u64,
+    /// Detached Falcon signature by the initiator over `session_init_payload_v1`.
+    #[serde(with = "crate::security::keystore::base64_serde")]
+    signature: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SessionResponseMessage {
+    version: u8,
+    initiator_id: String,
+    responder_id: String,
+    /// Session identifier from the initiator.
+    #[serde(with = "crate::security::keystore::base64_serde")]
+    session_id: Vec<u8>,
+    /// Session sequence echoed from the initiator.
+    session_seq: u64,
+    /// Responder ephemeral X25519 public key (32 bytes).
+    #[serde(with = "crate::security::keystore::base64_serde")]
+    x25519_pk: Vec<u8>,
+    /// Kyber encapsulation ciphertext to the initiator ephemeral KEM public key.
+    #[serde(with = "crate::security::keystore::base64_serde")]
+    kem_ciphertext: Vec<u8>,
+    /// Informational timestamp (unix seconds) from the responder.
+    ts: u64,
+    /// Detached Falcon signature by the responder over `session_resp_payload_v1`.
+    #[serde(with = "crate::security::keystore::base64_serde")]
+    signature: Vec<u8>,
+}
+
+impl SessionInitMessage {
+    const VERSION_V1: u8 = 1;
+}
+
+impl SessionResponseMessage {
+    const VERSION_V1: u8 = 1;
+}
+
+fn vec_to_16(bytes: &[u8]) -> Result<[u8; 16]> {
+    if bytes.len() != 16 {
+        return Err(Error::InvalidInput(format!(
+            "Invalid 16-byte field length: {}",
+            bytes.len()
+        )));
+    }
+    let mut out = [0u8; 16];
+    out.copy_from_slice(bytes);
+    Ok(out)
+}
+
+fn vec_to_32(bytes: &[u8]) -> Result<[u8; 32]> {
+    if bytes.len() != 32 {
+        return Err(Error::InvalidInput(format!(
+            "Invalid 32-byte field length: {}",
+            bytes.len()
+        )));
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(bytes);
+    Ok(out)
+}
+
+struct SessionInitSigInput<'a> {
+    topic: &'a str,
+    session_id: &'a [u8; 16],
+    session_seq: u64,
+    initiator_id: &'a str,
+    responder_id: &'a str,
+    kem_pk: &'a [u8],
+    x25519_pk: &'a [u8; 32],
+    ts: u64,
+}
+
+fn session_init_payload_v1(input: &SessionInitSigInput<'_>) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"pqc-iiot:mqtt-session:init:v1");
+    buf.extend_from_slice(&(input.topic.len() as u16).to_be_bytes());
+    buf.extend_from_slice(input.topic.as_bytes());
+    buf.extend_from_slice(&(input.initiator_id.len() as u16).to_be_bytes());
+    buf.extend_from_slice(input.initiator_id.as_bytes());
+    buf.extend_from_slice(&(input.responder_id.len() as u16).to_be_bytes());
+    buf.extend_from_slice(input.responder_id.as_bytes());
+    buf.extend_from_slice(input.session_id);
+    buf.extend_from_slice(&input.session_seq.to_be_bytes());
+    buf.extend_from_slice(&input.ts.to_be_bytes());
+    buf.extend_from_slice(&(input.kem_pk.len() as u32).to_be_bytes());
+    buf.extend_from_slice(input.kem_pk);
+    buf.extend_from_slice(input.x25519_pk);
+    buf
+}
+
+struct SessionRespSigInput<'a> {
+    topic: &'a str,
+    session_id: &'a [u8; 16],
+    session_seq: u64,
+    initiator_id: &'a str,
+    responder_id: &'a str,
+    x25519_pk: &'a [u8; 32],
+    kem_ciphertext: &'a [u8],
+    ts: u64,
+}
+
+fn session_resp_payload_v1(input: &SessionRespSigInput<'_>) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"pqc-iiot:mqtt-session:resp:v1");
+    buf.extend_from_slice(&(input.topic.len() as u16).to_be_bytes());
+    buf.extend_from_slice(input.topic.as_bytes());
+    buf.extend_from_slice(&(input.initiator_id.len() as u16).to_be_bytes());
+    buf.extend_from_slice(input.initiator_id.as_bytes());
+    buf.extend_from_slice(&(input.responder_id.len() as u16).to_be_bytes());
+    buf.extend_from_slice(input.responder_id.as_bytes());
+    buf.extend_from_slice(input.session_id);
+    buf.extend_from_slice(&input.session_seq.to_be_bytes());
+    buf.extend_from_slice(&input.ts.to_be_bytes());
+    buf.extend_from_slice(input.x25519_pk);
+    buf.extend_from_slice(&(input.kem_ciphertext.len() as u32).to_be_bytes());
+    buf.extend_from_slice(input.kem_ciphertext);
+    buf
+}
+
+fn kyber_for_pk_len(len: usize) -> Result<Kyber> {
+    match len {
+        800 => Ok(Kyber::new_with_level(KyberSecurityLevel::Kyber512)),
+        1184 => Ok(Kyber::new_with_level(KyberSecurityLevel::Kyber768)),
+        1568 => Ok(Kyber::new_with_level(KyberSecurityLevel::Kyber1024)),
+        _ => Err(Error::InvalidInput(format!(
+            "Invalid Kyber public key length: {}",
+            len
+        ))),
+    }
+}
+
+fn kyber_for_sk_len(len: usize) -> Result<Kyber> {
+    match len {
+        1632 => Ok(Kyber::new_with_level(KyberSecurityLevel::Kyber512)),
+        2400 => Ok(Kyber::new_with_level(KyberSecurityLevel::Kyber768)),
+        3168 => Ok(Kyber::new_with_level(KyberSecurityLevel::Kyber1024)),
+        _ => Err(Error::InvalidInput(format!(
+            "Invalid Kyber secret key length: {}",
+            len
+        ))),
+    }
+}
+
+fn derive_session_chain_keys_v1(kem_ss: &[u8], dh_ss: &[u8]) -> Result<([u8; 32], [u8; 32])> {
+    if kem_ss.len() != 32 || dh_ss.len() != 32 {
+        return Err(Error::CryptoError(format!(
+            "Invalid session shared secret lengths: kem_ss={} dh_ss={}",
+            kem_ss.len(),
+            dh_ss.len()
+        )));
+    }
+    let mut ikm = [0u8; 64];
+    ikm[..32].copy_from_slice(kem_ss);
+    ikm[32..].copy_from_slice(dh_ss);
+
+    let hk = Hkdf::<Sha256>::new(None, &ikm);
+    let mut ck_initiator = [0u8; 32];
+    let mut ck_responder = [0u8; 32];
+    hk.expand(b"pqc-iiot:mqtt-session:v1:ck-initiator", &mut ck_initiator)
+        .map_err(|_| Error::CryptoError("HKDF expand failed (ck-initiator)".into()))?;
+    hk.expand(b"pqc-iiot:mqtt-session:v1:ck-responder", &mut ck_responder)
+        .map_err(|_| Error::CryptoError("HKDF expand failed (ck-responder)".into()))?;
+
+    ikm.zeroize();
+
+    Ok((ck_initiator, ck_responder))
+}
+
+const MQTT_SESSION_MAX_SKIPPED_KEYS: usize = 50;
+const MQTT_SESSION_MAX_MESSAGES: u32 = 100_000;
+
+#[derive(Debug)]
+struct MqttSession {
+    session_id: [u8; 16],
+    send_chain_key: [u8; 32],
+    recv_chain_key: [u8; 32],
+    send_msg_num: u32,
+    recv_msg_num: u32,
+    skipped_message_keys: std::collections::HashMap<u32, [u8; 32]>,
+}
+
+impl MqttSession {
+    fn new(session_id: [u8; 16], send_chain_key: [u8; 32], recv_chain_key: [u8; 32]) -> Self {
+        Self {
+            session_id,
+            send_chain_key,
+            recv_chain_key,
+            send_msg_num: 0,
+            recv_msg_num: 0,
+            skipped_message_keys: std::collections::HashMap::new(),
+        }
+    }
+
+    fn kdf_ck(ck: &[u8; 32]) -> Result<([u8; 32], [u8; 32])> {
+        let hkdf = Hkdf::<Sha256>::from_prk(ck)
+            .map_err(|_| Error::CryptoError("HKDF PRK init failed".into()))?;
+        let mut mk = [0u8; 32];
+        let mut next_ck = [0u8; 32];
+        hkdf.expand(b"pqc-iiot:mqtt-session:v1:mk", &mut mk)
+            .map_err(|_| Error::CryptoError("HKDF expand failed (mk)".into()))?;
+        hkdf.expand(b"pqc-iiot:mqtt-session:v1:ck", &mut next_ck)
+            .map_err(|_| Error::CryptoError("HKDF expand failed (ck)".into()))?;
+        Ok((next_ck, mk))
+    }
+
+    fn aad_v2(
+        sender_id: &str,
+        receiver_id: &str,
+        topic: &str,
+        session_id: &[u8; 16],
+        msg_num: u32,
+    ) -> Vec<u8> {
+        let mut aad = Vec::new();
+        aad.extend_from_slice(b"pqc-iiot:mqtt-msg:v2");
+        aad.extend_from_slice(&(sender_id.len() as u16).to_be_bytes());
+        aad.extend_from_slice(sender_id.as_bytes());
+        aad.extend_from_slice(&(receiver_id.len() as u16).to_be_bytes());
+        aad.extend_from_slice(receiver_id.as_bytes());
+        aad.extend_from_slice(&(topic.len() as u16).to_be_bytes());
+        aad.extend_from_slice(topic.as_bytes());
+        aad.extend_from_slice(session_id);
+        aad.extend_from_slice(&msg_num.to_be_bytes());
+        aad
+    }
+
+    fn nonce_v2(session_id: &[u8; 16], msg_num: u32) -> [u8; 12] {
+        let mut nonce = [0u8; 12];
+        nonce[..8].copy_from_slice(&session_id[..8]);
+        nonce[8..].copy_from_slice(&msg_num.to_be_bytes());
+        nonce
+    }
+
+    fn encrypt_v2(
+        &mut self,
+        sender_id: &str,
+        receiver_id: &str,
+        topic: &str,
+        plaintext: &[u8],
+    ) -> Result<(u32, Vec<u8>)> {
+        if self.send_msg_num >= MQTT_SESSION_MAX_MESSAGES {
+            return Err(Error::ProtocolError(format!(
+                "Session {} exhausted message budget (send)",
+                hex::encode(self.session_id)
+            )));
+        }
+
+        let (next_ck, mk) = Self::kdf_ck(&self.send_chain_key)?;
+        self.send_chain_key = next_ck;
+        let msg_num = self.send_msg_num;
+        self.send_msg_num = self.send_msg_num.saturating_add(1);
+
+        let aad = Self::aad_v2(sender_id, receiver_id, topic, &self.session_id, msg_num);
+        let nonce_bytes = Self::nonce_v2(&self.session_id, msg_num);
+
+        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&mk));
+        let ciphertext = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce_bytes),
+                Payload {
+                    msg: plaintext,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| Error::CryptoError("AES-GCM encryption failed".into()))?;
+
+        Ok((msg_num, ciphertext))
+    }
+
+    fn decrypt_with_mk_v2(
+        &self,
+        sender_id: &str,
+        receiver_id: &str,
+        topic: &str,
+        msg_num: u32,
+        mk: &[u8; 32],
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>> {
+        let aad = Self::aad_v2(sender_id, receiver_id, topic, &self.session_id, msg_num);
+        let nonce_bytes = Self::nonce_v2(&self.session_id, msg_num);
+        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(mk));
+        cipher
+            .decrypt(
+                Nonce::from_slice(&nonce_bytes),
+                Payload {
+                    msg: ciphertext,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| Error::CryptoError("AES-GCM decryption failed".into()))
+    }
+
+    fn decrypt_v2(
+        &mut self,
+        sender_id: &str,
+        receiver_id: &str,
+        topic: &str,
+        msg_num: u32,
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>> {
+        if let Some(mk) = self.skipped_message_keys.remove(&msg_num) {
+            return self.decrypt_with_mk_v2(
+                sender_id,
+                receiver_id,
+                topic,
+                msg_num,
+                &mk,
+                ciphertext,
+            );
+        }
+
+        if msg_num < self.recv_msg_num {
+            return Err(Error::CryptoError("Message too old / replay".into()));
+        }
+
+        let delta = msg_num - self.recv_msg_num;
+        if delta > MQTT_SESSION_MAX_SKIPPED_KEYS as u32 {
+            return Err(Error::CryptoError(
+                "Message too far in the future (skip limit exceeded)".into(),
+            ));
+        }
+
+        while self.recv_msg_num < msg_num {
+            let (next_ck, mk) = Self::kdf_ck(&self.recv_chain_key)?;
+            self.skipped_message_keys.insert(self.recv_msg_num, mk);
+            self.recv_chain_key = next_ck;
+            self.recv_msg_num = self.recv_msg_num.saturating_add(1);
+        }
+
+        let (next_ck, mk) = Self::kdf_ck(&self.recv_chain_key)?;
+        self.recv_chain_key = next_ck;
+        self.recv_msg_num = self.recv_msg_num.saturating_add(1);
+
+        self.decrypt_with_mk_v2(sender_id, receiver_id, topic, msg_num, &mk, ciphertext)
+    }
+}
+
+impl Drop for MqttSession {
+    fn drop(&mut self) {
+        self.send_chain_key.zeroize();
+        self.recv_chain_key.zeroize();
+        for (_, key) in self.skipped_message_keys.iter_mut() {
+            key.zeroize();
+        }
+        self.skipped_message_keys.clear();
+    }
+}
+
+struct PendingSessionInit {
+    peer_id: String,
+    session_seq: u64,
+    kem_sk: Zeroizing<Vec<u8>>,
+    x25519_sk: X25519StaticSecret,
+}
+
+struct CachedSessionResponse {
+    session_seq: u64,
+    session_id: [u8; 16],
+    bytes: Vec<u8>,
+}
+
+impl Drop for PendingSessionInit {
+    fn drop(&mut self) {
+        self.kem_sk.zeroize();
+        // x25519_dalek secrets are zeroized on drop.
+    }
 }
 
 /// Canonical payload used for signing/verifying key announcements.
@@ -205,6 +819,66 @@ fn key_announcement_payload(peer_id: &str, keys: &PeerKeys) -> Vec<u8> {
     buf
 }
 
+fn mqtt_encrypted_message_signature_digest(
+    sender_id: &str,
+    topic: &str,
+    encrypted_blob: &[u8],
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"pqc-iiot:mqtt-msg:v1");
+    hasher.update((sender_id.len() as u16).to_be_bytes());
+    hasher.update(sender_id.as_bytes());
+    hasher.update((topic.len() as u16).to_be_bytes());
+    hasher.update(topic.as_bytes());
+    hasher.update((encrypted_blob.len() as u32).to_be_bytes());
+    hasher.update(encrypted_blob);
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
+/// Sliding replay window check.
+///
+/// Returns `true` if `seq` is accepted and updates `(last_sequence, replay_window)` in-place.
+/// Returns `false` if `seq` is a replay or is too old (outside the window).
+fn replay_window_accept(last_sequence: &mut u64, replay_window: &mut u64, seq: u64) -> bool {
+    const WINDOW_BITS: u64 = 64;
+
+    if seq == 0 {
+        return false;
+    }
+
+    if *last_sequence == 0 {
+        *last_sequence = seq;
+        *replay_window = 1;
+        return true;
+    }
+
+    if seq > *last_sequence {
+        let delta = seq - *last_sequence;
+        if delta >= WINDOW_BITS {
+            *replay_window = 1;
+        } else {
+            *replay_window <<= delta;
+            *replay_window |= 1;
+        }
+        *last_sequence = seq;
+        return true;
+    }
+
+    let delta = *last_sequence - seq;
+    if delta >= WINDOW_BITS {
+        return false;
+    }
+    let mask = 1u64 << delta;
+    if (*replay_window & mask) != 0 {
+        return false;
+    }
+    *replay_window |= mask;
+    true
+}
+
 impl SecureMqttClient {
     /// Create a new Secure MQTT client.
     ///
@@ -234,7 +908,31 @@ impl SecureMqttClient {
         Self::init(broker, port, client_id, Some(key.to_vec()))
     }
 
+    /// Create a new Secure MQTT client using an externally provided `SecurityProvider` (TPM/HSM/TEE).
+    ///
+    /// In this mode, long-term secrets are assumed to be managed by the provider and are **not**
+    /// loaded from or written to the local identity file. Only non-secret metadata
+    /// (CA trust anchor, operational certificate, sequence number) is persisted via
+    /// `SecurityProvider::seal_data`.
+    pub fn new_with_provider(
+        broker: &str,
+        port: u16,
+        client_id: &str,
+        provider: Arc<dyn SecurityProvider>,
+    ) -> Result<Self> {
+        Self::init_with_provider(broker, port, client_id, provider)
+    }
+
     fn init(broker: &str, port: u16, client_id: &str, key: Option<Vec<u8>>) -> Result<Self> {
+        // MQTT identities are used on-wire as topic suffixes and message prefixes.
+        // Enforce a strict, bounded charset to avoid topic injection and cardinality DoS.
+        if !is_valid_wire_peer_id(client_id) {
+            return Err(Error::InvalidInput(format!(
+                "Invalid client_id (must match [A-Za-z0-9_.-] and be <= {} bytes)",
+                MAX_WIRE_ID_LEN
+            )));
+        }
+
         // Run FIPS/Compliance Self-Tests on startup
         crate::compliance::run_self_tests()?;
 
@@ -450,14 +1148,21 @@ impl SecureMqttClient {
         // Instantiate SoftwareSecurityProvider (exportable for identity persistence).
         // X25519 static secret must be pinned to avoid "self-bricking" decryption failures after restart.
         let mut x25519_sk_bytes = x25519_sk;
-        let provider = Arc::new(SoftwareSecurityProvider::new_exportable_with_x25519(
-            sk,
-            pk.clone(),
-            sig_sk,
-            sig_pk.clone(),
-            x25519_sk_bytes,
-        ));
+        let provider: Arc<dyn SecurityProvider> =
+            Arc::new(SoftwareSecurityProvider::new_exportable_with_x25519(
+                sk,
+                pk.clone(),
+                sig_sk,
+                sig_pk.clone(),
+                x25519_sk_bytes,
+            ));
         x25519_sk_bytes.zeroize();
+
+        let audit_signer = provider.clone();
+        let secure_time = SecureTimeFloor::load(
+            provider.clone(),
+            format!("pqc-iiot:time-floor:v1:{}", storage_id),
+        )?;
 
         let mut client = SecureMqttClient {
             client: None,
@@ -474,6 +1179,7 @@ impl SecureMqttClient {
             storage_id,
             // Secure by default: reject unknown peers unless explicitly opted out.
             strict_mode: true,
+            require_sessions: false,
             trust_anchor_ca_sig_pk,
             operational_cert,
             attestation_required: false,
@@ -484,7 +1190,7 @@ impl SecureMqttClient {
             data_dir: data_dir.clone(), // Clone here to avoid move
             encryption_key,
             // kyber, // Removed
-            audit_logger: Box::new(ChainedAuditLogger::new(&data_dir)),
+            audit_logger: Box::new(ChainedAuditLogger::new_signed(&data_dir, audit_signer)),
             metrics: Arc::new(SecurityMetrics::new()),
             persist_manager: crate::persistence::LazyPersistManager::new(
                 Duration::from_secs(300), // Flush every 5 mins
@@ -493,6 +1199,39 @@ impl SecureMqttClient {
             network_recv: None,
             heartbeat: Arc::new(AtomicU64::new(0)),
             key_prefix: "pqc/keys/".to_string(),
+            max_key_announcement_bytes: DEFAULT_MAX_KEY_ANNOUNCEMENT_BYTES,
+            max_attestation_bytes: DEFAULT_MAX_ATTESTATION_BYTES,
+            max_encrypted_message_bytes: DEFAULT_MAX_ENCRYPTED_MESSAGE_BYTES,
+            max_revocation_bytes: DEFAULT_MAX_REVOCATION_BYTES,
+            revocation_topic: "pqc/revocations/v1".to_string(),
+            max_policy_bytes: DEFAULT_MAX_POLICY_BYTES,
+            policy_topic: DEFAULT_POLICY_TOPIC.to_string(),
+            fleet_policy: None,
+            sig_verify_budget: TokenBucketMap::new(
+                DEFAULT_SIGVERIFY_BUDGET_CAPACITY,
+                DEFAULT_SIGVERIFY_BUDGET_REFILL_PER_SEC,
+                DEFAULT_BUDGET_MAX_PEERS,
+            ),
+            decrypt_budget: TokenBucketMap::new(
+                DEFAULT_DECRYPT_BUDGET_CAPACITY,
+                DEFAULT_DECRYPT_BUDGET_REFILL_PER_SEC,
+                DEFAULT_BUDGET_MAX_PEERS,
+            ),
+            global_sig_verify_budget: TokenBucket::new(
+                DEFAULT_GLOBAL_SIGVERIFY_BUDGET_CAPACITY,
+                DEFAULT_GLOBAL_SIGVERIFY_BUDGET_REFILL_PER_SEC,
+            ),
+            global_decrypt_budget: TokenBucket::new(
+                DEFAULT_GLOBAL_DECRYPT_BUDGET_CAPACITY,
+                DEFAULT_GLOBAL_DECRYPT_BUDGET_REFILL_PER_SEC,
+            ),
+            secure_time,
+            max_session_bytes: DEFAULT_MAX_SESSION_BYTES,
+            session_init_prefix: DEFAULT_SESSION_INIT_PREFIX.to_string(),
+            session_resp_prefix: DEFAULT_SESSION_RESP_PREFIX.to_string(),
+            pending_sessions: std::collections::HashMap::new(),
+            sessions: std::collections::HashMap::new(),
+            session_resp_cache: std::collections::HashMap::new(),
         };
 
         // Migrate legacy keystore to the new storage path (best-effort; atomic write).
@@ -505,20 +1244,182 @@ impl SecureMqttClient {
             client.save_identity()?;
         }
 
+        // Initialize keystore anti-rollback binding after any legacy migration flush.
+        client.init_keystore_anti_rollback()?;
+
+        if let Some(policy) = client.load_sealed_fleet_policy()? {
+            if let Some(ca_pk) = client.trust_anchor_ca_sig_pk.clone() {
+                if let Err(e) = policy.verify(&ca_pk, &client.policy_topic) {
+                    warn!("Ignoring sealed fleet policy: {}", e);
+                } else {
+                    client.apply_fleet_policy(policy);
+                }
+            }
+        }
+
+        Ok(client)
+    }
+
+    fn init_with_provider(
+        broker: &str,
+        port: u16,
+        client_id: &str,
+        provider: Arc<dyn SecurityProvider>,
+    ) -> Result<Self> {
+        if !is_valid_wire_peer_id(client_id) {
+            return Err(Error::InvalidInput(format!(
+                "Invalid client_id (must match [A-Za-z0-9_.-] and be <= {} bytes)",
+                MAX_WIRE_ID_LEN
+            )));
+        }
+
+        crate::compliance::run_self_tests()?;
+
+        let storage_id = storage_id_for(client_id);
+
+        let mut options = MqttOptions::new(client_id, broker, port);
+        options.set_keep_alive(Duration::from_secs(5));
+        options.set_clean_session(true);
+
+        let data_dir = std::path::Path::new("pqc-data");
+        if !data_dir.exists() {
+            std::fs::create_dir_all(data_dir).map_err(Error::IoError)?;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(e) =
+                std::fs::set_permissions(data_dir, std::fs::Permissions::from_mode(0o700))
+            {
+                warn!("failed to set permissions on {:?}: {}", data_dir, e);
+            }
+        }
+        let data_dir = data_dir.to_path_buf();
+
+        // Load keystore.
+        let keystore_path = data_dir.join(format!("keystore_{}.json", storage_id));
+        let keystore_path_str = keystore_path.to_str().ok_or(Error::ClientError(
+            "Invalid Keystore Path (Non-UTF8)".into(),
+        ))?;
+        let keystore = KeyStore::load_from_file(keystore_path_str)?;
+
+        // Load sealed identity metadata (best-effort; first run initializes defaults).
+        let (meta, meta_missing) = load_sealed_identity_meta(&provider, &storage_id)?;
+        let mut sequence_number = meta.sequence_number;
+        if sequence_number == 0 {
+            sequence_number = 1;
+        }
+
+        let audit_signer = provider.clone();
+        let secure_time = SecureTimeFloor::load(
+            provider.clone(),
+            format!("pqc-iiot:time-floor:v1:{}", storage_id),
+        )?;
+
+        let mut client = SecureMqttClient {
+            client: None,
+            options,
+            keystore,
+            public_key: provider.kem_public_key().to_vec(),
+            sig_pk: provider.sig_public_key().to_vec(),
+            provider,
+            sequence_number,
+            client_id: client_id.to_string(),
+            storage_id: storage_id.clone(),
+            strict_mode: true,
+            require_sessions: false,
+            trust_anchor_ca_sig_pk: meta.trust_anchor_ca_sig_pk,
+            operational_cert: meta.operational_cert,
+            attestation_required: false,
+            expected_pcr_digest: vec![0u8; 32],
+            pending_attestation: std::collections::HashMap::new(),
+            attest_challenge_prefix: "pqc/attest/challenge/".to_string(),
+            attest_quote_prefix: "pqc/attest/quote/".to_string(),
+            data_dir: data_dir.clone(),
+            encryption_key: None,
+            audit_logger: Box::new(ChainedAuditLogger::new_signed(&data_dir, audit_signer)),
+            metrics: Arc::new(SecurityMetrics::new()),
+            persist_manager: crate::persistence::LazyPersistManager::new(
+                Duration::from_secs(300),
+                50,
+            ),
+            network_recv: None,
+            heartbeat: Arc::new(AtomicU64::new(0)),
+            key_prefix: "pqc/keys/".to_string(),
+            max_key_announcement_bytes: DEFAULT_MAX_KEY_ANNOUNCEMENT_BYTES,
+            max_attestation_bytes: DEFAULT_MAX_ATTESTATION_BYTES,
+            max_encrypted_message_bytes: DEFAULT_MAX_ENCRYPTED_MESSAGE_BYTES,
+            max_revocation_bytes: DEFAULT_MAX_REVOCATION_BYTES,
+            revocation_topic: "pqc/revocations/v1".to_string(),
+            max_policy_bytes: DEFAULT_MAX_POLICY_BYTES,
+            policy_topic: DEFAULT_POLICY_TOPIC.to_string(),
+            fleet_policy: None,
+            sig_verify_budget: TokenBucketMap::new(
+                DEFAULT_SIGVERIFY_BUDGET_CAPACITY,
+                DEFAULT_SIGVERIFY_BUDGET_REFILL_PER_SEC,
+                DEFAULT_BUDGET_MAX_PEERS,
+            ),
+            decrypt_budget: TokenBucketMap::new(
+                DEFAULT_DECRYPT_BUDGET_CAPACITY,
+                DEFAULT_DECRYPT_BUDGET_REFILL_PER_SEC,
+                DEFAULT_BUDGET_MAX_PEERS,
+            ),
+            global_sig_verify_budget: TokenBucket::new(
+                DEFAULT_GLOBAL_SIGVERIFY_BUDGET_CAPACITY,
+                DEFAULT_GLOBAL_SIGVERIFY_BUDGET_REFILL_PER_SEC,
+            ),
+            global_decrypt_budget: TokenBucket::new(
+                DEFAULT_GLOBAL_DECRYPT_BUDGET_CAPACITY,
+                DEFAULT_GLOBAL_DECRYPT_BUDGET_REFILL_PER_SEC,
+            ),
+            secure_time,
+            max_session_bytes: DEFAULT_MAX_SESSION_BYTES,
+            session_init_prefix: DEFAULT_SESSION_INIT_PREFIX.to_string(),
+            session_resp_prefix: DEFAULT_SESSION_RESP_PREFIX.to_string(),
+            pending_sessions: std::collections::HashMap::new(),
+            sessions: std::collections::HashMap::new(),
+            session_resp_cache: std::collections::HashMap::new(),
+        };
+
+        if !client.provider.is_rollback_resistant_storage() {
+            warn!(
+                "SecurityProvider '{}' does not provide rollback-resistant storage; secure time and anti-rollback checks are best-effort only",
+                client.provider.provider_kind()
+            );
+        }
+
+        // Anchor keystore anti-rollback counter.
+        client.init_keystore_anti_rollback()?;
+
+        if let Some(policy) = client.load_sealed_fleet_policy()? {
+            if let Some(ca_pk) = client.trust_anchor_ca_sig_pk.clone() {
+                if let Err(e) = policy.verify(&ca_pk, &client.policy_topic) {
+                    warn!("Ignoring sealed fleet policy: {}", e);
+                } else {
+                    client.apply_fleet_policy(policy);
+                }
+            }
+        }
+
+        // First run: persist initial metadata so subsequent boots have a stable anchor.
+        if meta_missing {
+            client.save_identity()?;
+        }
+
         Ok(client)
     }
 
     /// Save the current identity to disk.
     pub fn save_identity(&self) -> Result<()> {
-        // Export keys from provider.
-        let exported = match self.provider.export_secret_keys() {
-            Some(keys) => keys,
-            None => {
-                return Err(Error::ClientError(
-                    "Cannot save identity: Provider does not export keys".to_string(),
-                ))
-            }
-        };
+        // Non-exportable providers (TPM/HSM) persist only non-secret metadata behind seal/unseal.
+        if self.provider.export_secret_keys().is_none() {
+            return self.seal_identity_meta();
+        }
+
+        // Export keys from provider (software identity path).
+        let exported = self.provider.export_secret_keys().ok_or_else(|| {
+            Error::ClientError("Cannot save identity: Provider does not export keys".to_string())
+        })?;
 
         let x25519_pk = self.provider.x25519_public_key();
 
@@ -585,6 +1486,135 @@ impl SecureMqttClient {
         Ok(())
     }
 
+    fn identity_meta_label(&self) -> String {
+        format!("pqc-iiot:identity-meta:v1:{}", self.storage_id)
+    }
+
+    fn session_out_seq_label(&self, peer_id: &str) -> String {
+        format!(
+            "pqc-iiot:mqtt-session-outseq:v1:{}:{}",
+            self.storage_id,
+            storage_id_for(peer_id)
+        )
+    }
+
+    fn session_in_seq_label(&self, peer_id: &str) -> String {
+        format!(
+            "pqc-iiot:mqtt-session-inseq:v1:{}:{}",
+            self.storage_id,
+            storage_id_for(peer_id)
+        )
+    }
+
+    fn next_session_seq(&self, peer_id: &str) -> Result<u64> {
+        let label = self.session_out_seq_label(peer_id);
+        let current = unseal_u64(&self.provider, &label)?.unwrap_or(0);
+        let next = current.saturating_add(1).max(1);
+        seal_u64(&self.provider, &label, next)?;
+        Ok(next)
+    }
+
+    fn last_inbound_session_seq(&self, peer_id: &str) -> Result<u64> {
+        let label = self.session_in_seq_label(peer_id);
+        Ok(unseal_u64(&self.provider, &label)?.unwrap_or(0))
+    }
+
+    fn persist_inbound_session_seq(&self, peer_id: &str, seq: u64) -> Result<()> {
+        let label = self.session_in_seq_label(peer_id);
+        seal_u64(&self.provider, &label, seq)
+    }
+
+    fn fleet_policy_label(&self) -> String {
+        format!("pqc-iiot:fleet-policy:v1:{}", self.storage_id)
+    }
+
+    fn load_sealed_fleet_policy(&self) -> Result<Option<FleetPolicyUpdate>> {
+        let label = self.fleet_policy_label();
+        match self.provider.unseal_data(&label) {
+            Ok(blob) => {
+                let policy: FleetPolicyUpdate = serde_json::from_slice(&blob).map_err(|e| {
+                    Error::ClientError(format!("Invalid sealed fleet policy ({}): {}", label, e))
+                })?;
+                Ok(Some(policy))
+            }
+            Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn seal_fleet_policy(&self, policy: &FleetPolicyUpdate) -> Result<()> {
+        let label = self.fleet_policy_label();
+        let blob = serde_json::to_vec(policy)
+            .map_err(|e| Error::ClientError(format!("Fleet policy serialization error: {}", e)))?;
+        self.provider.seal_data(&label, &blob)
+    }
+
+    fn apply_fleet_policy(&mut self, policy: FleetPolicyUpdate) {
+        self.strict_mode = policy.strict_mode;
+        self.attestation_required = policy.attestation_required;
+        self.require_sessions = policy.require_sessions;
+
+        if let Some(b) = &policy.sig_verify_budget {
+            let max_peers = self.sig_verify_budget.max_peers;
+            self.sig_verify_budget =
+                TokenBucketMap::new(b.per_peer_capacity, b.per_peer_refill_per_sec, max_peers);
+            self.global_sig_verify_budget =
+                TokenBucket::new(b.global_capacity, b.global_refill_per_sec);
+        }
+        if let Some(b) = &policy.decrypt_budget {
+            let max_peers = self.decrypt_budget.max_peers;
+            self.decrypt_budget =
+                TokenBucketMap::new(b.per_peer_capacity, b.per_peer_refill_per_sec, max_peers);
+            self.global_decrypt_budget =
+                TokenBucket::new(b.global_capacity, b.global_refill_per_sec);
+        }
+
+        self.fleet_policy = Some(policy);
+    }
+
+    fn is_fleet_policy_stale(&mut self) -> Result<bool> {
+        let (issued_at, ttl_secs) = match &self.fleet_policy {
+            Some(p) => match p.ttl_secs {
+                Some(ttl) => (p.issued_at, ttl),
+                None => return Ok(false),
+            },
+            None => return Ok(false),
+        };
+
+        let now = self.secure_time.now_unix_s()?;
+        Ok(now.saturating_sub(issued_at) > ttl_secs)
+    }
+
+    fn ensure_fleet_policy_fresh(&mut self, op: &str) -> Result<()> {
+        if self.is_fleet_policy_stale()? {
+            return Err(Error::ClientError(format!(
+                "Fleet policy stale (ttl exceeded); refusing {}",
+                op
+            )));
+        }
+        Ok(())
+    }
+
+    fn drop_if_fleet_policy_stale(&mut self, op: &str) -> Result<bool> {
+        if self.is_fleet_policy_stale()? {
+            warn!("Dropping {}: fleet policy stale (ttl exceeded)", op);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn seal_identity_meta(&self) -> Result<()> {
+        let meta = SealedIdentityMeta {
+            version: SealedIdentityMeta::VERSION_V1,
+            trust_anchor_ca_sig_pk: self.trust_anchor_ca_sig_pk.clone(),
+            operational_cert: self.operational_cert.clone(),
+            sequence_number: self.sequence_number.max(1),
+        };
+        let blob = serde_json::to_vec(&meta)
+            .map_err(|e| Error::ClientError(format!("Identity meta serialization error: {}", e)))?;
+        self.provider.seal_data(&self.identity_meta_label(), &blob)
+    }
+
     fn keystore_path(&self) -> std::path::PathBuf {
         self.data_dir
             .join(format!("keystore_{}.json", self.storage_id))
@@ -595,7 +1625,16 @@ impl SecureMqttClient {
         let keystore_path_str = keystore_path.to_str().ok_or(Error::ClientError(
             "Invalid Keystore Path (Non-UTF8)".into(),
         ))?;
+        // Bump generation *before* persistence. If we crash after file write but before sealing,
+        // the next boot repairs a +1 mismatch (see init_keystore_anti_rollback).
+        let gen = self.keystore.bump_generation();
         self.keystore.save_to_file(keystore_path_str)?;
+
+        // Bind the persisted keystore generation to a sealed counter behind the provider.
+        // In TPM/HSM-backed providers, this becomes an anti-rollback primitive for replay windows.
+        let label = self.keystore_generation_label();
+        seal_u64(&self.provider, &label, gen)?;
+
         Ok(())
     }
 
@@ -605,6 +1644,53 @@ impl SecureMqttClient {
             self.persist_manager.notify_flushed();
         }
         Ok(())
+    }
+
+    fn keystore_generation_label(&self) -> String {
+        // Tie the counter to storage_id to avoid using client_id as a filesystem fragment and to
+        // keep identities stable across display-name changes.
+        format!("pqc-iiot:keystore-gen:v1:{}", self.storage_id)
+    }
+
+    fn init_keystore_anti_rollback(&mut self) -> Result<()> {
+        let label = self.keystore_generation_label();
+        let file_gen = self.keystore.generation();
+        let sealed_gen = unseal_u64(&self.provider, &label)?;
+
+        match sealed_gen {
+            None => {
+                // First run (or legacy upgrade): anchor the counter to the current on-disk generation.
+                seal_u64(&self.provider, &label, file_gen)?;
+            }
+            Some(sealed) => {
+                if file_gen < sealed {
+                    return Err(Error::ClientError(format!(
+                        "Keystore rollback detected: file_gen={} < sealed_gen={}",
+                        file_gen, sealed
+                    )));
+                }
+                if file_gen > sealed {
+                    // Accept a +1 mismatch as a crash window repair; anything larger is suspicious.
+                    if file_gen == sealed.saturating_add(1) {
+                        seal_u64(&self.provider, &label, file_gen)?;
+                    } else {
+                        return Err(Error::ClientError(format!(
+                            "Keystore generation mismatch: file_gen={} sealed_gen={}",
+                            file_gen, sealed
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn allow_sig_verify(&mut self, peer_id: &str) -> bool {
+        self.global_sig_verify_budget.allow() && self.sig_verify_budget.allow(peer_id)
+    }
+
+    fn allow_decrypt(&mut self, peer_id: &str) -> bool {
+        self.global_decrypt_budget.allow() && self.decrypt_budget.allow(peer_id)
     }
 
     // ... builders ...
@@ -650,6 +1736,140 @@ impl SecureMqttClient {
         // Ensure trailing slash
         if !self.key_prefix.ends_with('/') {
             self.key_prefix.push('/');
+        }
+        self
+    }
+
+    /// Set the maximum accepted bytes for key announcements (`pqc/keys/<peer>`).
+    ///
+    /// This is a DoS containment boundary: payloads larger than this are dropped before parsing.
+    pub fn with_max_key_announcement_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_key_announcement_bytes = max_bytes;
+        self
+    }
+
+    /// Set the maximum accepted bytes for attestation messages (challenge/quote).
+    pub fn with_max_attestation_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_attestation_bytes = max_bytes;
+        self
+    }
+
+    /// Set the maximum accepted bytes for encrypted messages.
+    pub fn with_max_encrypted_message_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_encrypted_message_bytes = max_bytes;
+        self
+    }
+
+    /// Set the maximum accepted bytes for revocation updates.
+    pub fn with_max_revocation_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_revocation_bytes = max_bytes;
+        self
+    }
+
+    /// Set the maximum accepted bytes for fleet policy updates.
+    pub fn with_max_policy_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_policy_bytes = max_bytes;
+        self
+    }
+
+    /// Set the maximum accepted bytes for MQTT session control messages (init/resp).
+    ///
+    /// These messages carry ephemeral public keys and signatures and should remain bounded.
+    pub fn with_max_session_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_session_bytes = max_bytes;
+        self
+    }
+
+    /// Configure signature verification DoS budgets.
+    ///
+    /// This caps **expensive** cryptographic work (Falcon signature verification, certificate verification).
+    /// Budgets are enforced per-peer *and* globally to prevent sender-id cardinality attacks.
+    pub fn with_sig_verify_budget(
+        mut self,
+        per_peer_capacity: u32,
+        per_peer_refill_per_sec: u32,
+        global_capacity: u32,
+        global_refill_per_sec: u32,
+    ) -> Self {
+        let max_peers = self.sig_verify_budget.max_peers;
+        self.sig_verify_budget =
+            TokenBucketMap::new(per_peer_capacity, per_peer_refill_per_sec, max_peers);
+        self.global_sig_verify_budget = TokenBucket::new(global_capacity, global_refill_per_sec);
+        self
+    }
+
+    /// Configure decryption/KEM DoS budgets.
+    ///
+    /// This caps decapsulation + AEAD decrypt work, which is typically the highest-cost path.
+    pub fn with_decrypt_budget(
+        mut self,
+        per_peer_capacity: u32,
+        per_peer_refill_per_sec: u32,
+        global_capacity: u32,
+        global_refill_per_sec: u32,
+    ) -> Self {
+        let max_peers = self.decrypt_budget.max_peers;
+        self.decrypt_budget =
+            TokenBucketMap::new(per_peer_capacity, per_peer_refill_per_sec, max_peers);
+        self.global_decrypt_budget = TokenBucket::new(global_capacity, global_refill_per_sec);
+        self
+    }
+
+    /// Configure the maximum number of tracked peers in DoS budget maps.
+    ///
+    /// This is a hard memory bound under sender-id cardinality attacks.
+    pub fn with_budget_max_peers(mut self, max_peers: usize) -> Self {
+        self.sig_verify_budget = TokenBucketMap::new(
+            self.sig_verify_budget.capacity,
+            self.sig_verify_budget.refill_rate_per_sec,
+            max_peers,
+        );
+        self.decrypt_budget = TokenBucketMap::new(
+            self.decrypt_budget.capacity,
+            self.decrypt_budget.refill_rate_per_sec,
+            max_peers,
+        );
+        self
+    }
+
+    /// Set the revocation topic (default "pqc/revocations/v1").
+    ///
+    /// This topic is expected to carry CA-signed revocation updates (CRL-like) and should be
+    /// retained by the broker so reconnecting devices can fetch the latest policy.
+    pub fn with_revocation_topic(mut self, topic: &str) -> Self {
+        self.revocation_topic = topic.to_string();
+        self
+    }
+
+    /// Set the fleet policy topic (default "pqc/policy/v1").
+    ///
+    /// This topic is expected to carry CA-signed FleetPolicyUpdate messages and should be retained
+    /// by the broker so reconnecting devices can fetch the latest policy.
+    pub fn with_policy_topic(mut self, topic: &str) -> Self {
+        self.policy_topic = topic.to_string();
+        self
+    }
+
+    /// Set the session init topic prefix (default `pqc/session/init/`).
+    ///
+    /// Session init messages are addressed to the **responder** under:
+    /// `{session_init_prefix}{responder_id}`.
+    pub fn with_session_init_prefix(mut self, prefix: &str) -> Self {
+        self.session_init_prefix = prefix.to_string();
+        if !self.session_init_prefix.ends_with('/') {
+            self.session_init_prefix.push('/');
+        }
+        self
+    }
+
+    /// Set the session response topic prefix (default `pqc/session/resp/`).
+    ///
+    /// Session responses are addressed to the **initiator** under:
+    /// `{session_resp_prefix}{initiator_id}`.
+    pub fn with_session_resp_prefix(mut self, prefix: &str) -> Self {
+        self.session_resp_prefix = prefix.to_string();
+        if !self.session_resp_prefix.ends_with('/') {
+            self.session_resp_prefix.push('/');
         }
         self
     }
@@ -836,6 +2056,26 @@ impl SecureMqttClient {
                 .subscribe(&quote_topic, QoS::AtLeastOnce)
                 .map_err(|e| Error::MqttError(e.to_string()))?;
 
+            // Subscribe to session control topics directed to this client.
+            let session_init_topic = format!("{}{}", self.session_init_prefix, self.client_id);
+            client
+                .subscribe(&session_init_topic, QoS::AtLeastOnce)
+                .map_err(|e| Error::MqttError(e.to_string()))?;
+            let session_resp_topic = format!("{}{}", self.session_resp_prefix, self.client_id);
+            client
+                .subscribe(&session_resp_topic, QoS::AtLeastOnce)
+                .map_err(|e| Error::MqttError(e.to_string()))?;
+
+            // Subscribe to fleet revocations (CA-signed CRL-like updates).
+            client
+                .subscribe(&self.revocation_topic, QoS::AtLeastOnce)
+                .map_err(|e| Error::MqttError(e.to_string()))?;
+
+            // Subscribe to fleet policy updates (CA-signed, retained).
+            client
+                .subscribe(&self.policy_topic, QoS::AtLeastOnce)
+                .map_err(|e| Error::MqttError(e.to_string()))?;
+
             // Provisioned identity is the default trust model: eliminate TOFU.
             // Nonce-based attestation is challenge-driven (handled out-of-band), so bootstrap does not emit a quote.
             let cert = match &self.operational_cert {
@@ -888,6 +2128,7 @@ impl SecureMqttClient {
                 key_id,
                 operational_cert: cert,
                 last_sequence: 0,
+                replay_window: 0,
                 is_trusted: true, // Self is trusted
                 quote: None,
                 key_signature: None,
@@ -924,6 +2165,19 @@ impl SecureMqttClient {
         target_client_id: &str,
     ) -> Result<()> {
         self.ensure_connected()?;
+        self.ensure_fleet_policy_fresh("publish_encrypted")?;
+
+        // Prefer forward-secure session encryption when a session is established.
+        // This is opt-in by calling `initiate_session()`; v1 remains as the fallback.
+        if self.sessions.contains_key(target_client_id) {
+            return self.publish_encrypted_session(topic, payload, target_client_id);
+        }
+        if self.require_sessions {
+            return Err(Error::ClientError(format!(
+                "Fleet policy requires sessions; no active session for {}. Call initiate_session() first",
+                target_client_id
+            )));
+        }
 
         // 1. Get Target Keys
         let target_keys = self
@@ -961,8 +2215,11 @@ impl SecureMqttClient {
             &attached_payload,
         )?;
 
-        // 4. Sign the encrypted blob
-        let signature = self.provider.sign(&encrypted_blob)?;
+        // 4. Sign the encrypted blob with explicit domain separation and topic binding.
+        // This prevents cross-protocol confusion and topic re-routing attacks.
+        let digest =
+            mqtt_encrypted_message_signature_digest(&self.client_id, topic, &encrypted_blob);
+        let signature = self.provider.sign(&digest)?;
         let sig_len = signature.len() as u16;
 
         // 5. Construct Packet: [ SenderID Len(2) ] [ SenderID ] [ Encrypted Blob ] [ Signature Len(2) ] [ Signature ]
@@ -1040,6 +2297,156 @@ impl SecureMqttClient {
         }
     }
 
+    /// Check if a forward-secure session (ratchet) is established for this peer.
+    pub fn has_session(&self, peer_id: &str) -> bool {
+        self.sessions.contains_key(peer_id)
+    }
+
+    /// Initiate an ephemeral authenticated session with a trusted peer.
+    ///
+    /// This is a building block for forward secrecy and post-compromise recovery:
+    /// - it uses ephemeral Kyber + ephemeral X25519, authenticated by long-term Falcon identities.
+    /// - once established, payloads can be protected via a symmetric ratchet without per-message KEM/signature costs.
+    pub fn initiate_session(&mut self, peer_id: &str) -> Result<()> {
+        self.ensure_connected()?;
+        self.ensure_fleet_policy_fresh("initiate_session")?;
+
+        if !is_valid_wire_peer_id(peer_id) {
+            return Err(Error::InvalidInput("Invalid peer_id for session".into()));
+        }
+
+        let keys = self.keystore.get(peer_id).ok_or_else(|| {
+            Error::ClientError(format!(
+                "Cannot initiate session: unknown peer (no keystore entry): {}",
+                peer_id
+            ))
+        })?;
+
+        if !keys.is_trusted {
+            return Err(Error::ClientError(format!(
+                "Cannot initiate session: peer not trusted/ready: {}",
+                peer_id
+            )));
+        }
+
+        if let Some(key_id) = keys.key_id.as_deref() {
+            if self.keystore.is_key_id_revoked(peer_id, key_id) {
+                return Err(Error::ClientError(format!(
+                    "Cannot initiate session: peer key_id is revoked: {}",
+                    peer_id
+                )));
+            }
+        }
+
+        // Generate session_id (16 bytes).
+        let mut session_id = [0u8; 16];
+        OsRng.fill_bytes(&mut session_id);
+
+        // Ephemeral X25519 key pair.
+        let x25519_sk = X25519StaticSecret::random_from_rng(OsRng);
+        let x25519_pk = X25519PublicKey::from(&x25519_sk).to_bytes();
+
+        // Ephemeral Kyber key pair (match our configured Kyber level).
+        let kyber = kyber_for_pk_len(self.public_key.len())?;
+        let (kem_pk, kem_sk) = kyber.generate_keypair()?;
+
+        let topic = format!("{}{}", self.session_init_prefix, peer_id);
+        let ts = self.secure_time.now_unix_s()?;
+        let session_seq = self.next_session_seq(peer_id)?;
+        let payload = session_init_payload_v1(&SessionInitSigInput {
+            topic: topic.as_str(),
+            session_id: &session_id,
+            session_seq,
+            initiator_id: &self.client_id,
+            responder_id: peer_id,
+            kem_pk: &kem_pk,
+            x25519_pk: &x25519_pk,
+            ts,
+        });
+        let signature = self.provider.sign(&payload)?;
+
+        let msg = SessionInitMessage {
+            version: SessionInitMessage::VERSION_V1,
+            initiator_id: self.client_id.clone(),
+            responder_id: peer_id.to_string(),
+            session_id: session_id.to_vec(),
+            session_seq,
+            kem_pk,
+            x25519_pk: x25519_pk.to_vec(),
+            ts,
+            signature,
+        };
+
+        let bytes = serde_json::to_vec(&msg)
+            .map_err(|e| Error::ClientError(format!("SessionInit JSON error: {}", e)))?;
+
+        self.pending_sessions.insert(
+            session_id,
+            PendingSessionInit {
+                peer_id: peer_id.to_string(),
+                session_seq,
+                kem_sk: Zeroizing::new(kem_sk),
+                x25519_sk,
+            },
+        );
+
+        if let Some(client) = &mut self.client {
+            client
+                .publish(topic, QoS::AtLeastOnce, false, bytes)
+                .map_err(|e| Error::MqttError(e.to_string()))?;
+        }
+
+        Ok(())
+    }
+
+    /// Publish an encrypted message using the forward-secure session ratchet (v2).
+    ///
+    /// Requires a session to be established via `initiate_session()` and a corresponding response.
+    pub fn publish_encrypted_session(
+        &mut self,
+        topic: &str,
+        payload: &[u8],
+        target_peer_id: &str,
+    ) -> Result<()> {
+        self.ensure_connected()?;
+
+        let session = self.sessions.get_mut(target_peer_id).ok_or_else(|| {
+            Error::ClientError(format!(
+                "No active session for {}; call initiate_session() and wait for response",
+                target_peer_id
+            ))
+        })?;
+
+        let (msg_num, ciphertext) =
+            session.encrypt_v2(&self.client_id, target_peer_id, topic, payload)?;
+
+        // Packet: [sender_id_len:u16][sender_id][v=2][session_id:16][msg_num:u32][ct_len:u32][ct]
+        let sender_id_bytes = self.client_id.as_bytes();
+        let sender_id_len = sender_id_bytes.len() as u16;
+
+        if ciphertext.len() > u32::MAX as usize {
+            return Err(Error::InvalidInput("Ciphertext too large".into()));
+        }
+        let ct_len = ciphertext.len() as u32;
+
+        let mut packet =
+            Vec::with_capacity(2 + sender_id_bytes.len() + 1 + 16 + 4 + 4 + ciphertext.len());
+        packet.extend_from_slice(&sender_id_len.to_be_bytes());
+        packet.extend_from_slice(sender_id_bytes);
+        packet.push(2);
+        packet.extend_from_slice(&session.session_id);
+        packet.extend_from_slice(&msg_num.to_be_bytes());
+        packet.extend_from_slice(&ct_len.to_be_bytes());
+        packet.extend_from_slice(&ciphertext);
+
+        if let Some(client) = &mut self.client {
+            client
+                .publish(topic, QoS::AtLeastOnce, false, packet)
+                .map_err(|e| Error::MqttError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     /// Manually add a trusted peer with their Identity Key (Falcon).
     pub fn add_trusted_peer(&mut self, client_id: &str, sig_pk: Vec<u8>) -> Result<()> {
         // Create a placeholder PeerKeys with just the identity key (sig_pk)
@@ -1060,6 +2467,7 @@ impl SecureMqttClient {
             key_id: None,
             operational_cert: None,
             last_sequence: 0,
+            replay_window: 0,
             is_trusted: true,
             quote: None,
             key_signature: None,
@@ -1137,6 +2545,22 @@ impl SecureMqttClient {
             // 1. Check Key Exchange
             if let Some(sender_id) = topic.strip_prefix(&self.key_prefix) {
                 if sender_id != self.client_id {
+                    if !is_valid_wire_peer_id(sender_id) {
+                        warn!(
+                            "Dropping key announcement with invalid peer id: {:?}",
+                            sender_id
+                        );
+                        return Ok(None);
+                    }
+                    if payload.len() > self.max_key_announcement_bytes {
+                        warn!(
+                            "Dropping key announcement from {}: payload too large ({} bytes > {})",
+                            sender_id,
+                            payload.len(),
+                            self.max_key_announcement_bytes
+                        );
+                        return Ok(None);
+                    }
                     let keys: PeerKeys = serde_json::from_slice(&payload)
                         .map_err(|e| Error::ClientError(format!("Invalid keys: {}", e)))?;
                     self.handle_key_exchange(sender_id, keys)?;
@@ -1147,6 +2571,14 @@ impl SecureMqttClient {
             // 1.1 Attestation challenge (directed to this subject)
             if let Some(target_id) = topic.strip_prefix(&self.attest_challenge_prefix) {
                 if target_id == self.client_id {
+                    if payload.len() > self.max_attestation_bytes {
+                        warn!(
+                            "Dropping attestation challenge: payload too large ({} bytes > {})",
+                            payload.len(),
+                            self.max_attestation_bytes
+                        );
+                        return Ok(None);
+                    }
                     let challenge: AttestationChallenge = serde_json::from_slice(&payload)
                         .map_err(|e| {
                             Error::ClientError(format!("Invalid attestation challenge: {}", e))
@@ -1159,6 +2591,14 @@ impl SecureMqttClient {
             // 1.2 Attestation quote (directed to this verifier)
             if let Some(verifier_id) = topic.strip_prefix(&self.attest_quote_prefix) {
                 if verifier_id == self.client_id {
+                    if payload.len() > self.max_attestation_bytes {
+                        warn!(
+                            "Dropping attestation quote msg: payload too large ({} bytes > {})",
+                            payload.len(),
+                            self.max_attestation_bytes
+                        );
+                        return Ok(None);
+                    }
                     let msg: AttestationQuoteMessage =
                         serde_json::from_slice(&payload).map_err(|e| {
                             Error::ClientError(format!("Invalid attestation quote msg: {}", e))
@@ -1168,28 +2608,150 @@ impl SecureMqttClient {
                 return Ok(None);
             }
 
+            // 1.3 Revocation updates (CA-signed, CRL-like).
+            if topic == self.revocation_topic {
+                if payload.len() > self.max_revocation_bytes {
+                    warn!(
+                        "Dropping revocation update: payload too large ({} bytes > {})",
+                        payload.len(),
+                        self.max_revocation_bytes
+                    );
+                    return Ok(None);
+                }
+                let update: RevocationUpdate = serde_json::from_slice(&payload).map_err(|e| {
+                    Error::ClientError(format!("Invalid revocation update JSON: {}", e))
+                })?;
+                self.handle_revocation_update(&topic, update)?;
+                return Ok(None);
+            }
+
+            // 1.3.1 Fleet policy updates (CA-signed, retained).
+            if topic == self.policy_topic {
+                if payload.len() > self.max_policy_bytes {
+                    warn!(
+                        "Dropping fleet policy update: payload too large ({} bytes > {})",
+                        payload.len(),
+                        self.max_policy_bytes
+                    );
+                    return Ok(None);
+                }
+                let update: FleetPolicyUpdate = serde_json::from_slice(&payload).map_err(|e| {
+                    Error::ClientError(format!("Invalid fleet policy update JSON: {}", e))
+                })?;
+                self.handle_fleet_policy_update(&topic, update)?;
+                return Ok(None);
+            }
+
+            // 1.4 Session control: init (directed to this responder).
+            if let Some(target_id) = topic.strip_prefix(&self.session_init_prefix) {
+                if target_id == self.client_id {
+                    if payload.len() > self.max_session_bytes {
+                        warn!(
+                            "Dropping session init: payload too large ({} bytes > {})",
+                            payload.len(),
+                            self.max_session_bytes
+                        );
+                        return Ok(None);
+                    }
+                    let msg: SessionInitMessage =
+                        serde_json::from_slice(&payload).map_err(|e| {
+                            Error::ClientError(format!("Invalid session init JSON: {}", e))
+                        })?;
+                    self.handle_session_init(&topic, msg)?;
+                }
+                return Ok(None);
+            }
+
+            // 1.5 Session control: response (directed to this initiator).
+            if let Some(target_id) = topic.strip_prefix(&self.session_resp_prefix) {
+                if target_id == self.client_id {
+                    if payload.len() > self.max_session_bytes {
+                        warn!(
+                            "Dropping session response: payload too large ({} bytes > {})",
+                            payload.len(),
+                            self.max_session_bytes
+                        );
+                        return Ok(None);
+                    }
+                    let msg: SessionResponseMessage =
+                        serde_json::from_slice(&payload).map_err(|e| {
+                            Error::ClientError(format!("Invalid session response JSON: {}", e))
+                        })?;
+                    self.handle_session_response(&topic, msg)?;
+                }
+                return Ok(None);
+            }
+
             // 2. Check Encrypted Packet (SenderID prefixed)
+            if payload.len() > self.max_encrypted_message_bytes {
+                warn!(
+                    "Dropping encrypted message: payload too large ({} bytes > {})",
+                    payload.len(),
+                    self.max_encrypted_message_bytes
+                );
+                return Ok(None);
+            }
             if payload.len() > 2 {
                 let (len_bytes, _) = payload.split_at(2);
                 let id_len = u16::from_be_bytes([len_bytes[0], len_bytes[1]]) as usize;
 
                 // Heuristic check
-                if id_len > 0 && id_len < 256 && payload.len() > 2 + id_len + 4 {
+                if id_len > 0 && id_len <= MAX_WIRE_ID_LEN && payload.len() > 2 + id_len + 4 {
                     let (id_bytes, rest) = payload[2..].split_at(id_len);
                     if let Ok(sender_id) = std::str::from_utf8(id_bytes) {
+                        if !is_valid_wire_peer_id(sender_id) {
+                            warn!(
+                                "Dropping encrypted message with invalid sender_id: {:?}",
+                                sender_id
+                            );
+                            return Ok(None);
+                        }
                         trace!("mqtt rx extracted sender_id={}", sender_id);
-                        // Look for signature at end
+                        // Session/ratchet encrypted packet (v2): [2][session_id:16][msg_num:u32][ct_len:u32][ct]
+                        // No per-message signature; authenticity is provided by the established session keys.
+                        if !rest.is_empty() && rest[0] == 2 {
+                            if let Some(plaintext) =
+                                self.try_decrypt_session_packet_v2(&topic, sender_id, rest)?
+                            {
+                                return Ok(Some((topic, plaintext)));
+                            }
+                            return Ok(None);
+                        }
+
+                        // v1: Look for signature at end
                         if rest.len() > 2 {
                             let (blob_and_sig, sig_len_bytes) = rest.split_at(rest.len() - 2);
                             let sig_len =
                                 u16::from_be_bytes([sig_len_bytes[0], sig_len_bytes[1]]) as usize;
+
+                            // Falcon signatures are small; reject absurd lengths early.
+                            if sig_len == 0 || sig_len > 2048 {
+                                warn!(
+                                    "Dropping encrypted message from {}: invalid signature length {}",
+                                    sender_id, sig_len
+                                );
+                                return Ok(None);
+                            }
 
                             if blob_and_sig.len() > sig_len {
                                 let (encrypted_blob, signature) =
                                     blob_and_sig.split_at(blob_and_sig.len() - sig_len);
 
                                 if let Some(keys) = self.keystore.get(sender_id) {
-                                    if !keys.is_trusted {
+                                    let sig_pk = keys.sig_pk.clone();
+                                    let key_id = keys.key_id.clone();
+                                    let is_trusted = keys.is_trusted;
+
+                                    if let Some(key_id) = key_id.as_deref() {
+                                        if self.keystore.is_key_id_revoked(sender_id, key_id) {
+                                            warn!(
+                                                "Dropping encrypted message from {}: key_id revoked",
+                                                sender_id
+                                            );
+                                            return Ok(None);
+                                        }
+                                    }
+                                    if !is_trusted {
                                         warn!(
                                             "Dropping encrypted message from untrusted peer: {}",
                                             sender_id
@@ -1197,22 +2759,44 @@ impl SecureMqttClient {
                                         return Ok(None);
                                     }
 
-                                    let is_valid = match verify_falcon_auto(
-                                        &keys.sig_pk,
+                                    // Asymmetric-cost DoS budget: signature verification is expensive.
+                                    if !self.allow_sig_verify(sender_id) {
+                                        warn!(
+                                            "Dropping encrypted message from {}: rate limited (sig verify budget)",
+                                            sender_id
+                                        );
+                                        self.metrics.inc_rate_limit_drop();
+                                        return Ok(None);
+                                    }
+
+                                    let digest = mqtt_encrypted_message_signature_digest(
+                                        sender_id,
+                                        &topic,
                                         encrypted_blob,
-                                        signature,
-                                    ) {
-                                        Ok(v) => v,
-                                        Err(e) => {
-                                            warn!(
-                                                "Signature verification error for {}: {}",
-                                                sender_id, e
-                                            );
-                                            false
-                                        }
-                                    };
+                                    );
+                                    let is_valid =
+                                        match verify_falcon_auto(&sig_pk, &digest, signature) {
+                                            Ok(v) => v,
+                                            Err(e) => {
+                                                warn!(
+                                                    "Signature verification error for {}: {}",
+                                                    sender_id, e
+                                                );
+                                                false
+                                            }
+                                        };
 
                                     if is_valid {
+                                        // Asymmetric-cost DoS budget: KEM + AEAD decrypt work is expensive.
+                                        if !self.allow_decrypt(sender_id) {
+                                            warn!(
+                                                "Dropping encrypted message from {}: rate limited (decrypt budget)",
+                                                sender_id
+                                            );
+                                            self.metrics.inc_rate_limit_drop();
+                                            return Ok(None);
+                                        }
+
                                         match self.provider.decrypt(encrypted_blob) {
                                             Ok(decrypted) => {
                                                 // Extract Sequence Number (First 8 bytes).
@@ -1224,26 +2808,35 @@ impl SecureMqttClient {
                                                     seq_arr.copy_from_slice(seq_bytes);
                                                     let seq = u64::from_be_bytes(seq_arr);
 
-                                                    if seq > keys.last_sequence {
-                                                        // Update KeyStore with new sequence
-                                                        if let Some(keys_mut) =
-                                                            self.keystore.get_mut(sender_id)
-                                                        {
-                                                            keys_mut.last_sequence = seq;
+                                                    // Update per-peer replay window (bounded OOO support).
+                                                    let mut accepted = false;
+                                                    if let Some(keys_mut) =
+                                                        self.keystore.get_mut(sender_id)
+                                                    {
+                                                        accepted = replay_window_accept(
+                                                            &mut keys_mut.last_sequence,
+                                                            &mut keys_mut.replay_window,
+                                                            seq,
+                                                        );
+                                                        if accepted {
                                                             self.persist_manager.mark_dirty();
                                                         }
+                                                    }
 
+                                                    if accepted {
+                                                        // Flush lazily (bounded by persist_manager policy).
+                                                        let _ = self.maybe_flush_keystore();
                                                         return Ok(Some((
                                                             topic,
                                                             actual_payload.to_vec(),
                                                         )));
-                                                    } else {
-                                                        warn!(
-                                                            "Replay detected: Seq {} <= Last {}",
-                                                            seq, keys.last_sequence
-                                                        );
-                                                        self.metrics.inc_replay_attack();
                                                     }
+
+                                                    warn!(
+                                                        "Replay detected from {}: seq={}",
+                                                        sender_id, seq
+                                                    );
+                                                    self.metrics.inc_replay_attack();
                                                 } else {
                                                     warn!("Decrypted payload too short");
                                                 }
@@ -1283,6 +2876,523 @@ impl SecureMqttClient {
             }
         }
         Ok(None)
+    }
+
+    fn handle_session_init(&mut self, topic: &str, msg: SessionInitMessage) -> Result<()> {
+        if self.drop_if_fleet_policy_stale("mqtt session init")? {
+            return Ok(());
+        }
+
+        if msg.version != SessionInitMessage::VERSION_V1 {
+            warn!(
+                "Ignoring session init on {}: unsupported version {}",
+                topic, msg.version
+            );
+            return Ok(());
+        }
+
+        if !is_valid_wire_peer_id(&msg.initiator_id) || !is_valid_wire_peer_id(&msg.responder_id) {
+            warn!("Ignoring session init: invalid peer ids");
+            return Ok(());
+        }
+
+        if msg.responder_id != self.client_id {
+            warn!(
+                "Ignoring session init: responder_id mismatch {} != {}",
+                msg.responder_id, self.client_id
+            );
+            return Ok(());
+        }
+
+        if msg.session_seq == 0 {
+            warn!(
+                "Ignoring session init from {}: invalid session_seq=0",
+                msg.initiator_id
+            );
+            return Ok(());
+        }
+
+        let session_id = match vec_to_16(&msg.session_id) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Ignoring session init from {}: {}", msg.initiator_id, e);
+                return Ok(());
+            }
+        };
+
+        let initiator_x_pk = match vec_to_32(&msg.x25519_pk) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Ignoring session init from {}: {}", msg.initiator_id, e);
+                return Ok(());
+            }
+        };
+
+        // Only accept sessions from trusted peers.
+        let (peer_sig_pk, peer_key_id, peer_is_trusted) = match self.keystore.get(&msg.initiator_id)
+        {
+            Some(k) => (k.sig_pk.clone(), k.key_id.clone(), k.is_trusted),
+            None => {
+                warn!(
+                    "Ignoring session init from {}: unknown peer (no keystore entry)",
+                    msg.initiator_id
+                );
+                return Ok(());
+            }
+        };
+
+        if !peer_is_trusted {
+            warn!(
+                "Ignoring session init from {}: peer not trusted/ready",
+                msg.initiator_id
+            );
+            return Ok(());
+        }
+
+        if let Some(key_id) = peer_key_id.as_deref() {
+            if self.keystore.is_key_id_revoked(&msg.initiator_id, key_id) {
+                warn!(
+                    "Ignoring session init from {}: key_id revoked",
+                    msg.initiator_id
+                );
+                return Ok(());
+            }
+        }
+
+        let last_seq = self.last_inbound_session_seq(&msg.initiator_id)?;
+        if msg.session_seq < last_seq {
+            warn!(
+                "Ignoring session init from {}: session_seq rollback ({} < {})",
+                msg.initiator_id, msg.session_seq, last_seq
+            );
+            self.metrics.inc_replay_attack();
+            return Ok(());
+        }
+        if msg.session_seq == last_seq {
+            // Idempotent retransmit: if we have a cached response for this (peer, seq, session_id),
+            // resend it without redoing expensive signature/KEM work.
+            if let Some(cached) = self.session_resp_cache.get(&msg.initiator_id) {
+                if cached.session_seq == msg.session_seq && cached.session_id == session_id {
+                    let resp_topic = format!("{}{}", self.session_resp_prefix, msg.initiator_id);
+                    if let Some(client) = &mut self.client {
+                        client
+                            .publish(resp_topic, QoS::AtLeastOnce, false, cached.bytes.clone())
+                            .map_err(|e| Error::MqttError(e.to_string()))?;
+                    }
+                }
+            }
+            return Ok(());
+        }
+
+        if !self.allow_sig_verify(&msg.initiator_id) {
+            warn!(
+                "Dropping session init from {}: rate limited (sig verify budget)",
+                msg.initiator_id
+            );
+            self.metrics.inc_rate_limit_drop();
+            return Ok(());
+        }
+
+        let payload = session_init_payload_v1(&SessionInitSigInput {
+            topic,
+            session_id: &session_id,
+            session_seq: msg.session_seq,
+            initiator_id: &msg.initiator_id,
+            responder_id: &msg.responder_id,
+            kem_pk: &msg.kem_pk,
+            x25519_pk: &initiator_x_pk,
+            ts: msg.ts,
+        });
+
+        let sig_ok = match verify_falcon_auto(&peer_sig_pk, &payload, &msg.signature) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "Ignoring session init from {}: signature verify error: {}",
+                    msg.initiator_id, e
+                );
+                false
+            }
+        };
+        if !sig_ok {
+            warn!(
+                "Ignoring session init from {}: invalid signature",
+                msg.initiator_id
+            );
+            return Ok(());
+        }
+
+        // Asymmetric-cost DoS budget: session establishment performs KEM work.
+        if !self.allow_decrypt(&msg.initiator_id) {
+            warn!(
+                "Dropping session init from {}: rate limited (decrypt budget)",
+                msg.initiator_id
+            );
+            self.metrics.inc_rate_limit_drop();
+            return Ok(());
+        }
+
+        // Responder ephemeral X25519 key pair.
+        let responder_x_sk = X25519StaticSecret::random_from_rng(OsRng);
+        let responder_x_pk = X25519PublicKey::from(&responder_x_sk).to_bytes();
+
+        let peer_pub = X25519PublicKey::from(initiator_x_pk);
+        let dh_ss = responder_x_sk.diffie_hellman(&peer_pub).to_bytes();
+
+        let kyber = match kyber_for_pk_len(msg.kem_pk.len()) {
+            Ok(k) => k,
+            Err(e) => {
+                warn!("Ignoring session init from {}: {}", msg.initiator_id, e);
+                return Ok(());
+            }
+        };
+        let (kem_ct, kem_ss) = match kyber.encapsulate(&msg.kem_pk) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "Ignoring session init from {}: kyber encapsulate failed: {}",
+                    msg.initiator_id, e
+                );
+                return Ok(());
+            }
+        };
+
+        let (ck_initiator, ck_responder) = match derive_session_chain_keys_v1(&kem_ss, &dh_ss) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "Ignoring session init from {}: session key derivation failed: {}",
+                    msg.initiator_id, e
+                );
+                return Ok(());
+            }
+        };
+
+        // Responder uses ck_responder for sending, ck_initiator for receiving.
+        let session = MqttSession::new(session_id, ck_responder, ck_initiator);
+
+        let replaced = self
+            .sessions
+            .insert(msg.initiator_id.clone(), session)
+            .is_some();
+        if !replaced {
+            self.metrics.inc_active_sessions();
+        }
+
+        // Send response to the initiator.
+        let initiator_id = msg.initiator_id;
+        let resp_topic = format!("{}{}", self.session_resp_prefix, initiator_id);
+        let ts = self.secure_time.now_unix_s()?;
+        let payload = session_resp_payload_v1(&SessionRespSigInput {
+            topic: resp_topic.as_str(),
+            session_id: &session_id,
+            session_seq: msg.session_seq,
+            initiator_id: &initiator_id,
+            responder_id: &self.client_id,
+            x25519_pk: &responder_x_pk,
+            kem_ciphertext: &kem_ct,
+            ts,
+        });
+        let signature = self.provider.sign(&payload)?;
+        let resp = SessionResponseMessage {
+            version: SessionResponseMessage::VERSION_V1,
+            initiator_id: initiator_id.clone(),
+            responder_id: self.client_id.clone(),
+            session_id: session_id.to_vec(),
+            session_seq: msg.session_seq,
+            x25519_pk: responder_x_pk.to_vec(),
+            kem_ciphertext: kem_ct,
+            ts,
+            signature,
+        };
+        let bytes = serde_json::to_vec(&resp)
+            .map_err(|e| Error::ClientError(format!("SessionResponse JSON error: {}", e)))?;
+
+        self.persist_inbound_session_seq(&initiator_id, msg.session_seq)?;
+        self.session_resp_cache.insert(
+            initiator_id.clone(),
+            CachedSessionResponse {
+                session_seq: msg.session_seq,
+                session_id,
+                bytes: bytes.clone(),
+            },
+        );
+
+        if let Some(client) = &mut self.client {
+            client
+                .publish(resp_topic, QoS::AtLeastOnce, false, bytes)
+                .map_err(|e| Error::MqttError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn handle_session_response(&mut self, topic: &str, msg: SessionResponseMessage) -> Result<()> {
+        if self.drop_if_fleet_policy_stale("mqtt session response")? {
+            return Ok(());
+        }
+
+        if msg.version != SessionResponseMessage::VERSION_V1 {
+            warn!(
+                "Ignoring session response on {}: unsupported version {}",
+                topic, msg.version
+            );
+            return Ok(());
+        }
+
+        if msg.initiator_id != self.client_id {
+            warn!(
+                "Ignoring session response: initiator_id mismatch {} != {}",
+                msg.initiator_id, self.client_id
+            );
+            return Ok(());
+        }
+
+        if msg.session_seq == 0 {
+            warn!(
+                "Ignoring session response from {}: invalid session_seq=0",
+                msg.responder_id
+            );
+            return Ok(());
+        }
+
+        if !is_valid_wire_peer_id(&msg.responder_id) {
+            warn!("Ignoring session response: invalid responder_id");
+            return Ok(());
+        }
+
+        let session_id = match vec_to_16(&msg.session_id) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Ignoring session response from {}: {}", msg.responder_id, e);
+                return Ok(());
+            }
+        };
+
+        let responder_x_pk = match vec_to_32(&msg.x25519_pk) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Ignoring session response from {}: {}", msg.responder_id, e);
+                return Ok(());
+            }
+        };
+
+        let pending = match self.pending_sessions.remove(&session_id) {
+            Some(p) => p,
+            None => {
+                warn!(
+                    "Ignoring session response from {}: unknown session_id {}",
+                    msg.responder_id,
+                    hex::encode(session_id)
+                );
+                return Ok(());
+            }
+        };
+
+        if pending.peer_id != msg.responder_id {
+            warn!(
+                "Ignoring session response: peer mismatch pending={} responder_id={}",
+                pending.peer_id, msg.responder_id
+            );
+            self.pending_sessions.insert(session_id, pending);
+            return Ok(());
+        }
+
+        if msg.session_seq != pending.session_seq {
+            warn!(
+                "Ignoring session response from {}: session_seq mismatch pending={} msg={}",
+                msg.responder_id, pending.session_seq, msg.session_seq
+            );
+            self.pending_sessions.insert(session_id, pending);
+            return Ok(());
+        }
+
+        let (peer_sig_pk, peer_key_id, peer_is_trusted) = match self.keystore.get(&msg.responder_id)
+        {
+            Some(k) => (k.sig_pk.clone(), k.key_id.clone(), k.is_trusted),
+            None => {
+                warn!(
+                    "Ignoring session response from {}: unknown peer (no keystore entry)",
+                    msg.responder_id
+                );
+                self.pending_sessions.insert(session_id, pending);
+                return Ok(());
+            }
+        };
+        if !peer_is_trusted {
+            warn!(
+                "Ignoring session response from {}: peer not trusted/ready",
+                msg.responder_id
+            );
+            self.pending_sessions.insert(session_id, pending);
+            return Ok(());
+        }
+        if let Some(key_id) = peer_key_id.as_deref() {
+            if self.keystore.is_key_id_revoked(&msg.responder_id, key_id) {
+                warn!(
+                    "Ignoring session response from {}: key_id revoked",
+                    msg.responder_id
+                );
+                self.pending_sessions.insert(session_id, pending);
+                return Ok(());
+            }
+        }
+
+        if !self.allow_sig_verify(&msg.responder_id) {
+            warn!(
+                "Dropping session response from {}: rate limited (sig verify budget)",
+                msg.responder_id
+            );
+            self.metrics.inc_rate_limit_drop();
+            self.pending_sessions.insert(session_id, pending);
+            return Ok(());
+        }
+
+        let payload = session_resp_payload_v1(&SessionRespSigInput {
+            topic,
+            session_id: &session_id,
+            session_seq: msg.session_seq,
+            initiator_id: &msg.initiator_id,
+            responder_id: &msg.responder_id,
+            x25519_pk: &responder_x_pk,
+            kem_ciphertext: &msg.kem_ciphertext,
+            ts: msg.ts,
+        });
+        let sig_ok = match verify_falcon_auto(&peer_sig_pk, &payload, &msg.signature) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "Ignoring session response from {}: signature verify error: {}",
+                    msg.responder_id, e
+                );
+                false
+            }
+        };
+        if !sig_ok {
+            warn!(
+                "Ignoring session response from {}: invalid signature",
+                msg.responder_id
+            );
+            self.pending_sessions.insert(session_id, pending);
+            return Ok(());
+        }
+
+        // KEM decapsulation is expensive: enforce decrypt budget here as well.
+        if !self.allow_decrypt(&msg.responder_id) {
+            warn!(
+                "Dropping session response from {}: rate limited (decrypt budget)",
+                msg.responder_id
+            );
+            self.metrics.inc_rate_limit_drop();
+            self.pending_sessions.insert(session_id, pending);
+            return Ok(());
+        }
+
+        let peer_pub = X25519PublicKey::from(responder_x_pk);
+        let dh_ss = pending.x25519_sk.diffie_hellman(&peer_pub).to_bytes();
+
+        let kyber = match kyber_for_sk_len(pending.kem_sk.len()) {
+            Ok(k) => k,
+            Err(e) => {
+                warn!("Ignoring session response from {}: {}", msg.responder_id, e);
+                self.pending_sessions.insert(session_id, pending);
+                return Ok(());
+            }
+        };
+        let kem_ss = match kyber.decapsulate(pending.kem_sk.as_slice(), &msg.kem_ciphertext) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "Ignoring session response from {}: kyber decapsulate failed: {}",
+                    msg.responder_id, e
+                );
+                self.pending_sessions.insert(session_id, pending);
+                return Ok(());
+            }
+        };
+
+        let (ck_initiator, ck_responder) = match derive_session_chain_keys_v1(&kem_ss, &dh_ss) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "Ignoring session response from {}: session key derivation failed: {}",
+                    msg.responder_id, e
+                );
+                self.pending_sessions.insert(session_id, pending);
+                return Ok(());
+            }
+        };
+
+        // Initiator uses ck_initiator for sending, ck_responder for receiving.
+        let session = MqttSession::new(session_id, ck_initiator, ck_responder);
+        let replaced = self.sessions.insert(msg.responder_id, session).is_some();
+        if !replaced {
+            self.metrics.inc_active_sessions();
+        }
+
+        Ok(())
+    }
+
+    fn try_decrypt_session_packet_v2(
+        &mut self,
+        topic: &str,
+        sender_id: &str,
+        rest: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        // [2][session_id:16][msg_num:u32][ct_len:u32][ct]
+        const HEADER_LEN: usize = 1 + 16 + 4 + 4;
+        if rest.len() < HEADER_LEN {
+            warn!(
+                "Dropping session packet from {}: too short ({} bytes)",
+                sender_id,
+                rest.len()
+            );
+            return Ok(None);
+        }
+
+        let mut session_id = [0u8; 16];
+        session_id.copy_from_slice(&rest[1..17]);
+        let msg_num = u32::from_be_bytes([rest[17], rest[18], rest[19], rest[20]]);
+        let ct_len = u32::from_be_bytes([rest[21], rest[22], rest[23], rest[24]]) as usize;
+
+        if rest.len() != HEADER_LEN + ct_len {
+            warn!(
+                "Dropping session packet from {}: length mismatch ct_len={} total={}",
+                sender_id,
+                ct_len,
+                rest.len()
+            );
+            return Ok(None);
+        }
+
+        let ciphertext = &rest[HEADER_LEN..];
+
+        let session = match self.sessions.get_mut(sender_id) {
+            Some(s) => s,
+            None => {
+                warn!(
+                    "Dropping session packet from {}: no active session",
+                    sender_id
+                );
+                return Ok(None);
+            }
+        };
+
+        if session.session_id != session_id {
+            warn!(
+                "Dropping session packet from {}: session_id mismatch",
+                sender_id
+            );
+            return Ok(None);
+        }
+
+        match session.decrypt_v2(sender_id, &self.client_id, topic, msg_num, ciphertext) {
+            Ok(pt) => Ok(Some(pt)),
+            Err(e) => {
+                warn!("Session decrypt failed for {}: {}", sender_id, e);
+                self.metrics.inc_decryption_failure();
+                Ok(None)
+            }
+        }
     }
 
     fn send_attestation_challenge(&mut self, peer_id: &str) -> Result<()> {
@@ -1369,6 +3479,15 @@ impl SecureMqttClient {
             return Ok(());
         }
 
+        // Attestation verification is expensive; apply per-peer + global budgets.
+        if !self.allow_sig_verify(&msg.subject_id) {
+            warn!(
+                "Attestation quote for {} dropped: rate limited (sig verify budget)",
+                msg.subject_id
+            );
+            self.metrics.inc_rate_limit_drop();
+            return Ok(());
+        }
         if let Err(e) = msg.quote.verify(&expected_nonce, &self.expected_pcr_digest) {
             warn!("Attestation quote rejected for {}: {}", msg.subject_id, e);
             return Ok(());
@@ -1387,12 +3506,117 @@ impl SecureMqttClient {
         Ok(())
     }
 
+    fn handle_revocation_update(&mut self, topic: &str, update: RevocationUpdate) -> Result<()> {
+        let ca_pk = match &self.trust_anchor_ca_sig_pk {
+            Some(pk) => pk,
+            None => {
+                warn!(
+                    "Ignoring revocation update on {}: missing trust_anchor_ca_sig_pk",
+                    topic
+                );
+                return Ok(());
+            }
+        };
+
+        // Revocation verification is expensive and broker-controlled. Apply a global budget.
+        if !self.global_sig_verify_budget.allow() {
+            warn!(
+                "Dropping revocation update on {}: rate limited (global sig verify budget)",
+                topic
+            );
+            self.metrics.inc_rate_limit_drop();
+            return Ok(());
+        }
+
+        if let Err(e) = update.verify(ca_pk, topic) {
+            warn!("Revocation update rejected: {}", e);
+            return Ok(());
+        }
+
+        let current_seq = self.keystore.revocation_seq();
+        if update.seq <= current_seq {
+            debug!(
+                "Ignoring revocation update: seq={} <= current_seq={}",
+                update.seq, current_seq
+            );
+            return Ok(());
+        }
+
+        for entry in &update.entries {
+            self.keystore
+                .revoke_key_id(entry.device_id.as_str(), entry.key_id.as_slice());
+            if let Some(peer) = self.keystore.get_mut(entry.device_id.as_str()) {
+                if peer.key_id.as_deref() == Some(entry.key_id.as_slice()) {
+                    peer.is_trusted = false;
+                }
+            }
+        }
+
+        self.keystore.set_revocation_seq(update.seq);
+
+        // Persist immediately: revocations are emergency policy updates and must survive restarts.
+        self.flush_keystore()?;
+        self.persist_manager.notify_flushed();
+
+        Ok(())
+    }
+
+    fn handle_fleet_policy_update(&mut self, topic: &str, update: FleetPolicyUpdate) -> Result<()> {
+        let ca_pk = match &self.trust_anchor_ca_sig_pk {
+            Some(pk) => pk,
+            None => {
+                warn!(
+                    "Ignoring fleet policy update on {}: missing trust_anchor_ca_sig_pk",
+                    topic
+                );
+                return Ok(());
+            }
+        };
+
+        // Policy verification is expensive and broker-controlled. Apply a global budget.
+        if !self.global_sig_verify_budget.allow() {
+            warn!(
+                "Dropping fleet policy update on {}: rate limited (global sig verify budget)",
+                topic
+            );
+            self.metrics.inc_rate_limit_drop();
+            return Ok(());
+        }
+
+        if let Err(e) = update.verify(ca_pk, topic) {
+            warn!("Fleet policy update rejected: {}", e);
+            return Ok(());
+        }
+
+        let current_seq = self.fleet_policy.as_ref().map(|p| p.seq).unwrap_or(0);
+        if update.seq <= current_seq {
+            debug!(
+                "Ignoring fleet policy update: seq={} <= current_seq={}",
+                update.seq, current_seq
+            );
+            return Ok(());
+        }
+
+        // Persist before applying so a crash after apply doesn't revert to an older policy.
+        self.seal_fleet_policy(&update)?;
+        self.apply_fleet_policy(update);
+
+        Ok(())
+    }
+
     /// Handle Key Exchange messages (Identity Verification)
     fn handle_key_exchange(&mut self, sender_id: &str, mut keys: PeerKeys) -> Result<()> {
+        if self.drop_if_fleet_policy_stale("mqtt key announcement")? {
+            return Ok(());
+        }
+
         // Trust is local policy; never accept remote claims via key announcements.
         keys.is_trusted = false;
         // Attestation artifacts must only be accepted via the explicit attestation flow.
         keys.quote = None;
+        // Replay state is local-only. Never accept remote-provided sequencing/window state.
+        keys.last_sequence = 0;
+        keys.replay_window = 0;
 
         // Detached signature is mandatory (older clients are rejected).
         let signature = match &keys.key_signature {
@@ -1411,7 +3635,7 @@ impl SecureMqttClient {
         // - strict_mode: require provisioning-backed OperationalCertificate (no TOFU)
         // - non-strict: apply TOFU semantics but pin `sig_pk` after first contact (prevents broker key rewrites)
         if let Some(cert) = &keys.operational_cert {
-            let ca_pk = match &self.trust_anchor_ca_sig_pk {
+            let ca_pk = match self.trust_anchor_ca_sig_pk.clone() {
                 Some(pk) => pk,
                 None => {
                     error!(
@@ -1424,11 +3648,16 @@ impl SecureMqttClient {
             };
 
             // Validate cert now (time window + signature + internal consistency).
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            if let Err(e) = cert.verify(ca_pk, Some(now)) {
+            let now = self.secure_time.now_unix_s()?;
+            if !self.allow_sig_verify(sender_id) {
+                warn!(
+                    "Key exchange from {} dropped: rate limited (cert verify budget)",
+                    sender_id
+                );
+                self.metrics.inc_rate_limit_drop();
+                return Ok(());
+            }
+            if let Err(e) = cert.verify(&ca_pk, Some(now)) {
                 warn!(
                     "Key exchange from {} rejected: invalid operational_cert: {}",
                     sender_id, e
@@ -1477,6 +3706,14 @@ impl SecureMqttClient {
 
             // Announcement signature check (proof-of-possession of the certified signing key).
             let payload = key_announcement_payload(sender_id, &keys);
+            if !self.allow_sig_verify(sender_id) {
+                warn!(
+                    "Key exchange from {} dropped: rate limited (announcement verify budget)",
+                    sender_id
+                );
+                self.metrics.inc_rate_limit_drop();
+                return Ok(());
+            }
             let is_valid = verify_falcon_auto(&cert.sig_pk, &payload, signature)?;
             if !is_valid {
                 warn!(
@@ -1509,13 +3746,20 @@ impl SecureMqttClient {
                 }
             }
 
+            if !self.allow_sig_verify(sender_id) {
+                warn!(
+                    "Key exchange from {} dropped: rate limited (announcement verify budget)",
+                    sender_id
+                );
+                self.metrics.inc_rate_limit_drop();
+                return Ok(());
+            }
             let verify_pk = match self.keystore.get(sender_id) {
-                Some(existing) if !existing.sig_pk.is_empty() => existing.sig_pk.as_slice(),
-                _ => keys.sig_pk.as_slice(),
+                Some(existing) if !existing.sig_pk.is_empty() => existing.sig_pk.clone(),
+                _ => keys.sig_pk.clone(),
             };
-
             let payload = key_announcement_payload(sender_id, &keys);
-            let is_valid = verify_falcon_auto(verify_pk, &payload, signature)?;
+            let is_valid = verify_falcon_auto(&verify_pk, &payload, signature)?;
             if !is_valid {
                 warn!(
                     "Key exchange from {} rejected: invalid signature",
@@ -1553,9 +3797,11 @@ impl SecureMqttClient {
 
                 // Preserve replay window.
                 keys.last_sequence = existing.last_sequence;
+                keys.replay_window = existing.replay_window;
             } else {
                 // New epoch => new session; reset replay window.
                 keys.last_sequence = 0;
+                keys.replay_window = 0;
             }
         }
 

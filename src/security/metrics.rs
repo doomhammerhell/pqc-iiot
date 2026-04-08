@@ -81,6 +81,11 @@ impl SecurityMetrics {
         self.replay_attacks_detected.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment rate-limit drops.
+    pub fn inc_rate_limit_drop(&self) {
+        self.rate_limit_drops.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Increment MQTT RX queue drops (bounded channel full).
     pub fn inc_mqtt_rx_queue_drop(&self) {
         self.mqtt_rx_queue_drops.fetch_add(1, Ordering::Relaxed);
