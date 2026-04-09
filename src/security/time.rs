@@ -5,6 +5,15 @@ use log::{info, warn};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+/// Security assurance level for `SecureTimeFloor`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimeAssurance {
+    /// Best-effort monotonic floor; can be rolled back if the sealed backend is rollbackable.
+    BestEffort,
+    /// Backed by rollback-resistant sealing (TPM NV, HSM, TEE monotonic storage, WORM service).
+    RollbackResistant,
+}
+
 fn system_unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -83,6 +92,15 @@ impl SecureTimeFloor {
         }
 
         Ok(now)
+    }
+
+    /// Returns the assurance level of the monotonic floor based on the provider backend.
+    pub fn assurance(&self) -> TimeAssurance {
+        if self.provider.is_rollback_resistant_storage() {
+            TimeAssurance::RollbackResistant
+        } else {
+            TimeAssurance::BestEffort
+        }
     }
 
     /// Force persistence of the current floor.

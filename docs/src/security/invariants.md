@@ -18,7 +18,7 @@ Out of scope (by design, today):
 
 - OSCORE / DTLS transport security for CoAP (required for confidentiality + replay protection)
 - Secure time / monotonic counters backed by TPM/TEE/HSM (we only implement a best-effort monotonic floor)
-- Post-compromise security (PCS) for MQTT/CoAP (needs a DH ratchet / periodic re-key)
+- Strong post-compromise security (PCS) for MQTT/CoAP (needs a DH ratchet; periodic re-handshake exists but is not PCS)
 
 ## Trust Boundaries
 
@@ -191,7 +191,7 @@ This project intentionally does not yet provide:
 
 - a trusted secure time source (we only enforce a best-effort monotonic floor; validity windows remain weak without TPM/TEE/HSM)
 - standardized CoAP transport security (OSCORE/DTLS); the session-based secure CoAP mode is application-level and not OSCORE
-- post-compromise security (PCS) for MQTT/CoAP (no DH ratchet / periodic re-key)
+- strong post-compromise security (PCS) for MQTT/CoAP (no DH ratchet; only periodic re-handshake)
 - revocation removal / unrevocation semantics (revocation is monotonic and additive)
 
 For critical IIoT deployments, treat these as **blockers**, not “nice-to-haves”.

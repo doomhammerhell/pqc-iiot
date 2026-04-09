@@ -41,6 +41,29 @@ fn publish_raw(topic: &str, port: u16, payload: Vec<u8>) -> Result<(), Box<dyn s
     Ok(())
 }
 
+fn wait_for_key_exchange(
+    alice: &mut SecureMqttClient,
+    bob: &mut SecureMqttClient,
+    alice_id: &str,
+    bob_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(5) {
+        alice.poll(|_, _| {})?;
+        bob.poll(|_, _| {})?;
+        if alice.has_peer(bob_id) && bob.has_peer(alice_id) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Err(format!(
+        "key exchange did not converge: alice_has_bob={} bob_has_alice={}",
+        alice.has_peer(bob_id),
+        bob.has_peer(alice_id)
+    )
+    .into())
+}
+
 #[test]
 fn mqtt_session_ratchet_establishes_and_binds_topic_and_rejects_replay(
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -225,12 +248,16 @@ fn mqtt_fleet_policy_require_sessions_enforced_and_updates_apply_monotonically(
         version: pqc_iiot::security::policy::FleetPolicyUpdate::VERSION_V1,
         seq: 1,
         issued_at: 1,
+        require_rollback_resistant_storage: false,
         strict_mode: false,
         attestation_required: false,
         require_sessions: true,
+        min_revocation_seq: None,
         sig_verify_budget: None,
         decrypt_budget: None,
         ttl_secs: None,
+        session_rekey_after_msgs: None,
+        session_rekey_after_secs: None,
         signature: Vec::new(),
     };
     policy_1.sign(&ca_sk, "pqc/policy/v1")?;
@@ -261,12 +288,16 @@ fn mqtt_fleet_policy_require_sessions_enforced_and_updates_apply_monotonically(
         version: pqc_iiot::security::policy::FleetPolicyUpdate::VERSION_V1,
         seq: 2,
         issued_at: 2,
+        require_rollback_resistant_storage: false,
         strict_mode: false,
         attestation_required: false,
         require_sessions: false,
+        min_revocation_seq: None,
         sig_verify_budget: None,
         decrypt_budget: None,
         ttl_secs: None,
+        session_rekey_after_msgs: None,
+        session_rekey_after_secs: None,
         signature: Vec::new(),
     };
     policy_2.sign(&ca_sk, "pqc/policy/v1")?;
@@ -295,6 +326,245 @@ fn mqtt_fleet_policy_require_sessions_enforced_and_updates_apply_monotonically(
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(got, "expected v1 publish to succeed after policy seq=2");
+
+    Ok(())
+}
+
+#[test]
+fn mqtt_policy_v2_fails_closed_without_rollback_resistant_storage(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let port = 29844;
+    common::start_mqtt_broker(port);
+    let suffix: u32 = rand::random();
+
+    let key_prefix = format!("pqc/policy2_keys_{}/", suffix);
+    let topic = format!("secure/policy2_storage_gate_{}", suffix);
+
+    let alice_id = format!("alice_policy2_{}", suffix);
+    let bob_id = format!("bob_policy2_{}", suffix);
+
+    let falcon = Falcon::new();
+    let (ca_pk, ca_sk) = falcon.generate_keypair().expect("ca keygen");
+
+    let mut alice = SecureMqttClient::new("localhost", port, &alice_id)?
+        .with_strict_mode(false)
+        .with_key_prefix(&key_prefix)
+        .with_trust_anchor_ca_sig_pk(ca_pk.clone());
+    let mut bob = SecureMqttClient::new("localhost", port, &bob_id)?
+        .with_strict_mode(false)
+        .with_key_prefix(&key_prefix)
+        .with_trust_anchor_ca_sig_pk(ca_pk);
+
+    alice.bootstrap()?;
+    bob.bootstrap()?;
+    bob.subscribe(&topic)?;
+
+    wait_for_key_exchange(&mut alice, &mut bob, &alice_id, &bob_id)?;
+
+    // Apply policy seq=1: require rollback-resistant storage (software provider must fail closed).
+    let mut policy = pqc_iiot::security::policy::FleetPolicyUpdate {
+        version: pqc_iiot::security::policy::FleetPolicyUpdate::VERSION_V2,
+        seq: 1,
+        issued_at: 1,
+        require_rollback_resistant_storage: true,
+        strict_mode: false,
+        attestation_required: false,
+        require_sessions: false,
+        min_revocation_seq: None,
+        sig_verify_budget: None,
+        decrypt_budget: None,
+        ttl_secs: None,
+        session_rekey_after_msgs: None,
+        session_rekey_after_secs: None,
+        signature: Vec::new(),
+    };
+    policy.sign(&ca_sk, "pqc/policy/v1")?;
+    publish_raw(
+        "pqc/policy/v1",
+        port,
+        serde_json::to_vec(&policy).expect("policy json"),
+    )?;
+
+    // Wait for policy to apply: publish must fail with a storage gate error once applied.
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(3) {
+        alice.poll(|_, _| {})?;
+        bob.poll(|_, _| {})?;
+        if let Err(e) = alice.publish_encrypted(&topic, b"X", &bob_id) {
+            if format!("{e:?}").contains("rollback-resistant storage") {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let err = alice
+        .publish_encrypted(&topic, b"BLOCKED", &bob_id)
+        .expect_err("expected fail-closed without rollback-resistant storage");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("rollback-resistant storage"),
+        "unexpected error: {msg}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn mqtt_policy_v2_fails_closed_when_revocation_seq_behind() -> Result<(), Box<dyn std::error::Error>>
+{
+    let port = 29846;
+    common::start_mqtt_broker(port);
+    let suffix: u32 = rand::random();
+
+    let key_prefix = format!("pqc/policy2_rev_keys_{}/", suffix);
+    let topic = format!("secure/policy2_rev_gate_{}", suffix);
+
+    let alice_id = format!("alice_policy2_rev_{}", suffix);
+    let bob_id = format!("bob_policy2_rev_{}", suffix);
+
+    let falcon = Falcon::new();
+    let (ca_pk, ca_sk) = falcon.generate_keypair().expect("ca keygen");
+
+    let mut alice = SecureMqttClient::new("localhost", port, &alice_id)?
+        .with_strict_mode(false)
+        .with_key_prefix(&key_prefix)
+        .with_trust_anchor_ca_sig_pk(ca_pk.clone());
+    let mut bob = SecureMqttClient::new("localhost", port, &bob_id)?
+        .with_strict_mode(false)
+        .with_key_prefix(&key_prefix)
+        .with_trust_anchor_ca_sig_pk(ca_pk);
+
+    alice.bootstrap()?;
+    bob.bootstrap()?;
+    bob.subscribe(&topic)?;
+
+    wait_for_key_exchange(&mut alice, &mut bob, &alice_id, &bob_id)?;
+
+    // Apply policy seq=1: require revocation catch-up.
+    let mut policy = pqc_iiot::security::policy::FleetPolicyUpdate {
+        version: pqc_iiot::security::policy::FleetPolicyUpdate::VERSION_V2,
+        seq: 1,
+        issued_at: 1,
+        require_rollback_resistant_storage: false,
+        strict_mode: false,
+        attestation_required: false,
+        require_sessions: false,
+        min_revocation_seq: Some(10),
+        sig_verify_budget: None,
+        decrypt_budget: None,
+        ttl_secs: None,
+        session_rekey_after_msgs: None,
+        session_rekey_after_secs: None,
+        signature: Vec::new(),
+    };
+    policy.sign(&ca_sk, "pqc/policy/v1")?;
+    publish_raw(
+        "pqc/policy/v1",
+        port,
+        serde_json::to_vec(&policy).expect("policy json"),
+    )?;
+
+    // Wait for policy to apply: publish must fail with revocation gating once applied.
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(3) {
+        alice.poll(|_, _| {})?;
+        bob.poll(|_, _| {})?;
+        if let Err(e) = alice.publish_encrypted(&topic, b"X", &bob_id) {
+            if format!("{e:?}").contains("Revocation state behind") {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let err = alice
+        .publish_encrypted(&topic, b"BLOCKED", &bob_id)
+        .expect_err("expected fail-closed when revocation seq behind");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("Revocation state behind"),
+        "unexpected error: {msg}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn mqtt_policy_v2_ttl_stale_blocks_new_handshakes() -> Result<(), Box<dyn std::error::Error>> {
+    let port = 29848;
+    common::start_mqtt_broker(port);
+    let suffix: u32 = rand::random();
+
+    let key_prefix = format!("pqc/policy2_ttl_keys_{}/", suffix);
+    let topic = format!("secure/policy2_ttl_gate_{}", suffix);
+
+    let alice_id = format!("alice_policy2_ttl_{}", suffix);
+    let bob_id = format!("bob_policy2_ttl_{}", suffix);
+
+    let falcon = Falcon::new();
+    let (ca_pk, ca_sk) = falcon.generate_keypair().expect("ca keygen");
+
+    let mut alice = SecureMqttClient::new("localhost", port, &alice_id)?
+        .with_strict_mode(false)
+        .with_key_prefix(&key_prefix)
+        .with_trust_anchor_ca_sig_pk(ca_pk.clone());
+    let mut bob = SecureMqttClient::new("localhost", port, &bob_id)?
+        .with_strict_mode(false)
+        .with_key_prefix(&key_prefix)
+        .with_trust_anchor_ca_sig_pk(ca_pk);
+
+    alice.bootstrap()?;
+    bob.bootstrap()?;
+    bob.subscribe(&topic)?;
+
+    wait_for_key_exchange(&mut alice, &mut bob, &alice_id, &bob_id)?;
+
+    // Apply policy seq=1: TTL in the past -> always stale (secure time uses system unix time).
+    let mut policy = pqc_iiot::security::policy::FleetPolicyUpdate {
+        version: pqc_iiot::security::policy::FleetPolicyUpdate::VERSION_V2,
+        seq: 1,
+        issued_at: 0,
+        require_rollback_resistant_storage: false,
+        strict_mode: false,
+        attestation_required: false,
+        require_sessions: false,
+        min_revocation_seq: None,
+        sig_verify_budget: None,
+        decrypt_budget: None,
+        ttl_secs: Some(1),
+        session_rekey_after_msgs: None,
+        session_rekey_after_secs: None,
+        signature: Vec::new(),
+    };
+    policy.sign(&ca_sk, "pqc/policy/v1")?;
+    publish_raw(
+        "pqc/policy/v1",
+        port,
+        serde_json::to_vec(&policy).expect("policy json"),
+    )?;
+
+    // Wait for policy to apply: publish must fail with a stale policy error once applied.
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(3) {
+        alice.poll(|_, _| {})?;
+        bob.poll(|_, _| {})?;
+        if let Err(e) = alice.publish_encrypted(&topic, b"X", &bob_id) {
+            if format!("{e:?}").contains("Fleet policy stale") {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let err = alice
+        .publish_encrypted(&topic, b"BLOCKED", &bob_id)
+        .expect_err("expected fail-closed when policy TTL is stale");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("Fleet policy stale"),
+        "unexpected error: {msg}"
+    );
 
     Ok(())
 }

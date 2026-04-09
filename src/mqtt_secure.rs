@@ -80,6 +80,19 @@ const DEFAULT_SESSION_RESP_PREFIX: &str = "pqc/session/resp/";
 /// Default MQTT topic for fleet policy updates.
 const DEFAULT_POLICY_TOPIC: &str = "pqc/policy/v1";
 
+/// Default MQTT topic for requesting fleet policy sync (client -> CA service).
+///
+/// The CA service is expected to answer by publishing a signed `FleetPolicyUpdate` on `DEFAULT_POLICY_TOPIC`.
+const DEFAULT_POLICY_SYNC_TOPIC: &str = "pqc/policy/sync/v1";
+
+/// Default MQTT topic for requesting revocation sync (client -> CA service).
+///
+/// The CA service is expected to answer by publishing a signed `RevocationUpdate` on `revocation_topic`.
+const DEFAULT_REVOCATION_SYNC_TOPIC: &str = "pqc/revocations/sync/v1";
+
+/// Rate limit for outbound sync requests to avoid turning stale-state into a spam amplifier.
+const DEFAULT_SYNC_REQUEST_COOLDOWN: Duration = Duration::from_secs(30);
+
 /// Default token bucket limits for expensive cryptographic verification work.
 ///
 /// These values are intentionally conservative to protect CPU under sustained adversarial load.
@@ -227,6 +240,14 @@ pub struct SecureMqttClient {
     strict_mode: bool,
     /// If true, disallow v1 per-message hybrid encryption and require session/ratchet (v2).
     require_sessions: bool,
+    /// If true, require rollback-resistant sealing/storage in the active fleet policy.
+    require_rollback_resistant_storage: bool,
+    /// Optional minimum revocation sequence required by fleet policy.
+    min_revocation_seq: Option<u64>,
+    /// Optional session rekey threshold (messages sent) from fleet policy.
+    session_rekey_after_msgs: Option<u32>,
+    /// Optional session rekey threshold (seconds since establishment) from fleet policy.
+    session_rekey_after_secs: Option<u64>,
     /// Pinned mesh CA public key used to verify OperationalCertificates.
     trust_anchor_ca_sig_pk: Option<Vec<u8>>,
     /// This device's OperationalCertificate (factory -> operational).
@@ -264,6 +285,7 @@ pub struct SecureMqttClient {
     revocation_topic: String,
     max_policy_bytes: usize,
     policy_topic: String,
+    policy_sync_topic: String,
     fleet_policy: Option<FleetPolicyUpdate>,
 
     // Asymmetric-cost DoS budgets (token buckets).
@@ -280,8 +302,13 @@ pub struct SecureMqttClient {
     session_init_prefix: String,
     session_resp_prefix: String,
     pending_sessions: std::collections::HashMap<[u8; 16], PendingSessionInit>,
-    sessions: std::collections::HashMap<String, MqttSession>,
+    sessions: std::collections::HashMap<String, PeerSessions>,
     session_resp_cache: std::collections::HashMap<String, CachedSessionResponse>,
+
+    // Partition handling / catch-up
+    revocation_sync_topic: String,
+    last_policy_sync_request: Option<Instant>,
+    last_revocation_sync_request: Option<Instant>,
 }
 
 use crate::persistence::AtomicFileStore;
@@ -424,6 +451,28 @@ struct SessionResponseMessage {
     /// Detached Falcon signature by the responder over `session_resp_payload_v1`.
     #[serde(with = "crate::security::keystore::base64_serde")]
     signature: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct FleetPolicySyncRequest {
+    version: u8,
+    client_id: String,
+    current_seq: u64,
+}
+
+impl FleetPolicySyncRequest {
+    const VERSION_V1: u8 = 1;
+}
+
+#[derive(Serialize, Deserialize)]
+struct RevocationSyncRequest {
+    version: u8,
+    client_id: String,
+    current_seq: u64,
+}
+
+impl RevocationSyncRequest {
+    const VERSION_V1: u8 = 1;
 }
 
 impl SessionInitMessage {
@@ -571,6 +620,7 @@ const MQTT_SESSION_MAX_MESSAGES: u32 = 100_000;
 #[derive(Debug)]
 struct MqttSession {
     session_id: [u8; 16],
+    created_at: Instant,
     send_chain_key: [u8; 32],
     recv_chain_key: [u8; 32],
     send_msg_num: u32,
@@ -582,6 +632,7 @@ impl MqttSession {
     fn new(session_id: [u8; 16], send_chain_key: [u8; 32], recv_chain_key: [u8; 32]) -> Self {
         Self {
             session_id,
+            created_at: Instant::now(),
             send_chain_key,
             recv_chain_key,
             send_msg_num: 0,
@@ -741,6 +792,57 @@ impl Drop for MqttSession {
             key.zeroize();
         }
         self.skipped_message_keys.clear();
+    }
+}
+
+/// Decryption grace window for the previous session after a rotation.
+///
+/// This is an availability safeguard: MQTT can reorder/duplicate deliveries, so in-flight packets
+/// encrypted under the previous session may arrive after the handshake completes.
+const MQTT_PREVIOUS_SESSION_GRACE: Duration = Duration::from_secs(30);
+
+struct PeerSessions {
+    current: MqttSession,
+    previous: Option<(MqttSession, Instant)>,
+}
+
+impl PeerSessions {
+    fn new(current: MqttSession) -> Self {
+        Self {
+            current,
+            previous: None,
+        }
+    }
+
+    fn rotate_to(&mut self, new_session: MqttSession) {
+        let old = std::mem::replace(&mut self.current, new_session);
+        self.previous = Some((old, Instant::now()));
+    }
+
+    fn prune(&mut self) {
+        if let Some((_, since)) = &self.previous {
+            if since.elapsed() > MQTT_PREVIOUS_SESSION_GRACE {
+                self.previous = None;
+            }
+        }
+    }
+
+    fn current_mut(&mut self) -> &mut MqttSession {
+        self.prune();
+        &mut self.current
+    }
+
+    fn get_mut_by_session_id(&mut self, session_id: &[u8; 16]) -> Option<&mut MqttSession> {
+        self.prune();
+        if &self.current.session_id == session_id {
+            return Some(&mut self.current);
+        }
+        if let Some((prev, _)) = self.previous.as_mut() {
+            if &prev.session_id == session_id {
+                return Some(prev);
+            }
+        }
+        None
     }
 }
 
@@ -1180,6 +1282,10 @@ impl SecureMqttClient {
             // Secure by default: reject unknown peers unless explicitly opted out.
             strict_mode: true,
             require_sessions: false,
+            require_rollback_resistant_storage: false,
+            min_revocation_seq: None,
+            session_rekey_after_msgs: None,
+            session_rekey_after_secs: None,
             trust_anchor_ca_sig_pk,
             operational_cert,
             attestation_required: false,
@@ -1206,6 +1312,7 @@ impl SecureMqttClient {
             revocation_topic: "pqc/revocations/v1".to_string(),
             max_policy_bytes: DEFAULT_MAX_POLICY_BYTES,
             policy_topic: DEFAULT_POLICY_TOPIC.to_string(),
+            policy_sync_topic: DEFAULT_POLICY_SYNC_TOPIC.to_string(),
             fleet_policy: None,
             sig_verify_budget: TokenBucketMap::new(
                 DEFAULT_SIGVERIFY_BUDGET_CAPACITY,
@@ -1232,6 +1339,9 @@ impl SecureMqttClient {
             pending_sessions: std::collections::HashMap::new(),
             sessions: std::collections::HashMap::new(),
             session_resp_cache: std::collections::HashMap::new(),
+            revocation_sync_topic: DEFAULT_REVOCATION_SYNC_TOPIC.to_string(),
+            last_policy_sync_request: None,
+            last_revocation_sync_request: None,
         };
 
         // Migrate legacy keystore to the new storage path (best-effort; atomic write).
@@ -1328,6 +1438,10 @@ impl SecureMqttClient {
             storage_id: storage_id.clone(),
             strict_mode: true,
             require_sessions: false,
+            require_rollback_resistant_storage: false,
+            min_revocation_seq: None,
+            session_rekey_after_msgs: None,
+            session_rekey_after_secs: None,
             trust_anchor_ca_sig_pk: meta.trust_anchor_ca_sig_pk,
             operational_cert: meta.operational_cert,
             attestation_required: false,
@@ -1353,6 +1467,7 @@ impl SecureMqttClient {
             revocation_topic: "pqc/revocations/v1".to_string(),
             max_policy_bytes: DEFAULT_MAX_POLICY_BYTES,
             policy_topic: DEFAULT_POLICY_TOPIC.to_string(),
+            policy_sync_topic: DEFAULT_POLICY_SYNC_TOPIC.to_string(),
             fleet_policy: None,
             sig_verify_budget: TokenBucketMap::new(
                 DEFAULT_SIGVERIFY_BUDGET_CAPACITY,
@@ -1379,6 +1494,9 @@ impl SecureMqttClient {
             pending_sessions: std::collections::HashMap::new(),
             sessions: std::collections::HashMap::new(),
             session_resp_cache: std::collections::HashMap::new(),
+            revocation_sync_topic: DEFAULT_REVOCATION_SYNC_TOPIC.to_string(),
+            last_policy_sync_request: None,
+            last_revocation_sync_request: None,
         };
 
         if !client.provider.is_rollback_resistant_storage() {
@@ -1553,6 +1671,10 @@ impl SecureMqttClient {
         self.strict_mode = policy.strict_mode;
         self.attestation_required = policy.attestation_required;
         self.require_sessions = policy.require_sessions;
+        self.require_rollback_resistant_storage = policy.require_rollback_resistant_storage;
+        self.min_revocation_seq = policy.min_revocation_seq;
+        self.session_rekey_after_msgs = policy.session_rekey_after_msgs;
+        self.session_rekey_after_secs = policy.session_rekey_after_secs;
 
         if let Some(b) = &policy.sig_verify_budget {
             let max_peers = self.sig_verify_budget.max_peers;
@@ -1572,6 +1694,103 @@ impl SecureMqttClient {
         self.fleet_policy = Some(policy);
     }
 
+    fn ensure_storage_assurance(&self, op: &str) -> Result<()> {
+        if self.require_rollback_resistant_storage && !self.provider.is_rollback_resistant_storage()
+        {
+            return Err(Error::ClientError(format!(
+                "Fleet policy requires rollback-resistant storage; refusing {} (provider_kind={})",
+                op,
+                self.provider.provider_kind()
+            )));
+        }
+        Ok(())
+    }
+
+    fn ensure_revocation_caught_up(&mut self, op: &str) -> Result<()> {
+        let min = match self.min_revocation_seq {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+        let have = self.keystore.revocation_seq();
+        if have < min {
+            warn!(
+                "Revocation state behind policy requirement: have_seq={} < min_seq={} (op={})",
+                have, min, op
+            );
+            let _ = self.maybe_request_revocation_sync();
+            return Err(Error::ClientError(format!(
+                "Revocation state behind policy requirement (have_seq={} < min_seq={}); refusing {}",
+                have, min, op
+            )));
+        }
+        Ok(())
+    }
+
+    fn maybe_request_fleet_policy_sync(&mut self) -> Result<()> {
+        let now = Instant::now();
+        if let Some(last) = self.last_policy_sync_request {
+            if now.duration_since(last) < DEFAULT_SYNC_REQUEST_COOLDOWN {
+                return Ok(());
+            }
+        }
+        self.last_policy_sync_request = Some(now);
+
+        let current_seq = self.fleet_policy.as_ref().map(|p| p.seq).unwrap_or(0);
+        let req = FleetPolicySyncRequest {
+            version: FleetPolicySyncRequest::VERSION_V1,
+            client_id: self.client_id.clone(),
+            current_seq,
+        };
+        let payload = serde_json::to_vec(&req)
+            .map_err(|e| Error::ClientError(format!("FleetPolicySyncRequest JSON error: {}", e)))?;
+
+        if let Some(client) = &mut self.client {
+            if let Err(e) =
+                client.publish(&self.policy_sync_topic, QoS::AtLeastOnce, false, payload)
+            {
+                warn!(
+                    "FleetPolicySyncRequest publish failed (topic={}): {}",
+                    self.policy_sync_topic, e
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn maybe_request_revocation_sync(&mut self) -> Result<()> {
+        let now = Instant::now();
+        if let Some(last) = self.last_revocation_sync_request {
+            if now.duration_since(last) < DEFAULT_SYNC_REQUEST_COOLDOWN {
+                return Ok(());
+            }
+        }
+        self.last_revocation_sync_request = Some(now);
+
+        let current_seq = self.keystore.revocation_seq();
+        let req = RevocationSyncRequest {
+            version: RevocationSyncRequest::VERSION_V1,
+            client_id: self.client_id.clone(),
+            current_seq,
+        };
+        let payload = serde_json::to_vec(&req)
+            .map_err(|e| Error::ClientError(format!("RevocationSyncRequest JSON error: {}", e)))?;
+
+        if let Some(client) = &mut self.client {
+            if let Err(e) = client.publish(
+                &self.revocation_sync_topic,
+                QoS::AtLeastOnce,
+                false,
+                payload,
+            ) {
+                warn!(
+                    "RevocationSyncRequest publish failed (topic={}): {}",
+                    self.revocation_sync_topic, e
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn is_fleet_policy_stale(&mut self) -> Result<bool> {
         let (issued_at, ttl_secs) = match &self.fleet_policy {
             Some(p) => match p.ttl_secs {
@@ -1586,7 +1805,10 @@ impl SecureMqttClient {
     }
 
     fn ensure_fleet_policy_fresh(&mut self, op: &str) -> Result<()> {
+        self.ensure_storage_assurance(op)?;
+        self.ensure_revocation_caught_up(op)?;
         if self.is_fleet_policy_stale()? {
+            let _ = self.maybe_request_fleet_policy_sync();
             return Err(Error::ClientError(format!(
                 "Fleet policy stale (ttl exceeded); refusing {}",
                 op
@@ -1597,6 +1819,7 @@ impl SecureMqttClient {
 
     fn drop_if_fleet_policy_stale(&mut self, op: &str) -> Result<bool> {
         if self.is_fleet_policy_stale()? {
+            let _ = self.maybe_request_fleet_policy_sync();
             warn!("Dropping {}: fleet policy stale (ttl exceeded)", op);
             return Ok(true);
         }
@@ -1847,6 +2070,26 @@ impl SecureMqttClient {
     /// by the broker so reconnecting devices can fetch the latest policy.
     pub fn with_policy_topic(mut self, topic: &str) -> Self {
         self.policy_topic = topic.to_string();
+        self
+    }
+
+    /// Set the fleet policy sync request topic (default "pqc/policy/sync/v1").
+    ///
+    /// This topic is used by devices to request that the control plane republishes the latest signed
+    /// `FleetPolicyUpdate` on `policy_topic`. It is a best-effort catch-up mechanism for long
+    /// partitions; it is not a delivery guarantee.
+    pub fn with_policy_sync_topic(mut self, topic: &str) -> Self {
+        self.policy_sync_topic = topic.to_string();
+        self
+    }
+
+    /// Set the revocation sync request topic (default "pqc/revocations/sync/v1").
+    ///
+    /// This topic is used by devices to request that the control plane republishes the latest signed
+    /// `RevocationUpdate` on `revocation_topic`. It is a best-effort catch-up mechanism for long
+    /// partitions; it is not a delivery guarantee.
+    pub fn with_revocation_sync_topic(mut self, topic: &str) -> Self {
+        self.revocation_sync_topic = topic.to_string();
         self
     }
 
@@ -2153,6 +2396,10 @@ impl SecureMqttClient {
                 warn!("keystore flush failed: {}", e);
             }
         }
+
+        // Best-effort catch-up for long partitions: request the latest policy/revocations from the control plane.
+        let _ = self.maybe_request_revocation_sync();
+        let _ = self.maybe_request_fleet_policy_sync();
         Ok(())
     }
 
@@ -2409,14 +2656,56 @@ impl SecureMqttClient {
         target_peer_id: &str,
     ) -> Result<()> {
         self.ensure_connected()?;
+        self.ensure_fleet_policy_fresh("publish_encrypted_session")?;
 
-        let session = self.sessions.get_mut(target_peer_id).ok_or_else(|| {
+        // Enforce periodic re-handshake thresholds from fleet policy (PCS building block).
+        let needs_rekey = match self.sessions.get(target_peer_id) {
+            Some(peer_sessions) => {
+                let msgs = self.session_rekey_after_msgs;
+                let secs = self.session_rekey_after_secs;
+                let mut required = false;
+                if let Some(max_msgs) = msgs {
+                    if peer_sessions.current.send_msg_num >= max_msgs {
+                        required = true;
+                    }
+                }
+                if let Some(max_secs) = secs {
+                    if peer_sessions.current.created_at.elapsed() >= Duration::from_secs(max_secs) {
+                        required = true;
+                    }
+                }
+                required
+            }
+            None => {
+                return Err(Error::ClientError(format!(
+                    "No active session for {}; call initiate_session() and wait for response",
+                    target_peer_id
+                )))
+            }
+        };
+        if needs_rekey {
+            if !self
+                .pending_sessions
+                .values()
+                .any(|p| p.peer_id == target_peer_id)
+            {
+                // Best-effort: initiate a fresh session; caller retries once established.
+                self.initiate_session(target_peer_id)?;
+            }
+            return Err(Error::ClientError(format!(
+                "Session requires rekey; initiated session handshake for {}; retry later",
+                target_peer_id
+            )));
+        }
+
+        let peer_sessions = self.sessions.get_mut(target_peer_id).ok_or_else(|| {
             Error::ClientError(format!(
                 "No active session for {}; call initiate_session() and wait for response",
                 target_peer_id
             ))
         })?;
 
+        let session = peer_sessions.current_mut();
         let (msg_num, ciphertext) =
             session.encrypt_v2(&self.client_id, target_peer_id, topic, payload)?;
 
@@ -2691,6 +2980,19 @@ impl SecureMqttClient {
                 );
                 return Ok(None);
             }
+
+            // If policy TTL is in effect and is stale, fail closed for decrypt/verify work.
+            if self.drop_if_fleet_policy_stale("mqtt encrypted message")? {
+                return Ok(None);
+            }
+            if let Err(e) = self.ensure_storage_assurance("mqtt encrypted message") {
+                warn!("Dropping encrypted message: {}", e);
+                return Ok(None);
+            }
+            if let Err(e) = self.ensure_revocation_caught_up("mqtt encrypted message") {
+                warn!("Dropping encrypted message: {}", e);
+                return Ok(None);
+            }
             if payload.len() > 2 {
                 let (len_bytes, _) = payload.split_at(2);
                 let id_len = u16::from_be_bytes([len_bytes[0], len_bytes[1]]) as usize;
@@ -2715,6 +3017,15 @@ impl SecureMqttClient {
                             {
                                 return Ok(Some((topic, plaintext)));
                             }
+                            return Ok(None);
+                        }
+
+                        // Policy enforcement: when sessions are required, drop v1 hybrid encrypted packets.
+                        if self.require_sessions {
+                            warn!(
+                                "Dropping v1 encrypted message from {}: fleet policy requires sessions",
+                                sender_id
+                            );
                             return Ok(None);
                         }
 
@@ -2880,6 +3191,14 @@ impl SecureMqttClient {
 
     fn handle_session_init(&mut self, topic: &str, msg: SessionInitMessage) -> Result<()> {
         if self.drop_if_fleet_policy_stale("mqtt session init")? {
+            return Ok(());
+        }
+        if let Err(e) = self.ensure_storage_assurance("mqtt session init") {
+            warn!("Dropping session init on {}: {}", topic, e);
+            return Ok(());
+        }
+        if let Err(e) = self.ensure_revocation_caught_up("mqtt session init") {
+            warn!("Dropping session init on {}: {}", topic, e);
             return Ok(());
         }
 
@@ -3071,11 +3390,11 @@ impl SecureMqttClient {
         // Responder uses ck_responder for sending, ck_initiator for receiving.
         let session = MqttSession::new(session_id, ck_responder, ck_initiator);
 
-        let replaced = self
-            .sessions
-            .insert(msg.initiator_id.clone(), session)
-            .is_some();
-        if !replaced {
+        if let Some(existing) = self.sessions.get_mut(&msg.initiator_id) {
+            existing.rotate_to(session);
+        } else {
+            self.sessions
+                .insert(msg.initiator_id.clone(), PeerSessions::new(session));
             self.metrics.inc_active_sessions();
         }
 
@@ -3128,6 +3447,14 @@ impl SecureMqttClient {
 
     fn handle_session_response(&mut self, topic: &str, msg: SessionResponseMessage) -> Result<()> {
         if self.drop_if_fleet_policy_stale("mqtt session response")? {
+            return Ok(());
+        }
+        if let Err(e) = self.ensure_storage_assurance("mqtt session response") {
+            warn!("Dropping session response on {}: {}", topic, e);
+            return Ok(());
+        }
+        if let Err(e) = self.ensure_revocation_caught_up("mqtt session response") {
+            warn!("Dropping session response on {}: {}", topic, e);
             return Ok(());
         }
 
@@ -3324,8 +3651,11 @@ impl SecureMqttClient {
 
         // Initiator uses ck_initiator for sending, ck_responder for receiving.
         let session = MqttSession::new(session_id, ck_initiator, ck_responder);
-        let replaced = self.sessions.insert(msg.responder_id, session).is_some();
-        if !replaced {
+        if let Some(existing) = self.sessions.get_mut(&msg.responder_id) {
+            existing.rotate_to(session);
+        } else {
+            self.sessions
+                .insert(msg.responder_id.clone(), PeerSessions::new(session));
             self.metrics.inc_active_sessions();
         }
 
@@ -3366,7 +3696,7 @@ impl SecureMqttClient {
 
         let ciphertext = &rest[HEADER_LEN..];
 
-        let session = match self.sessions.get_mut(sender_id) {
+        let peer_sessions = match self.sessions.get_mut(sender_id) {
             Some(s) => s,
             None => {
                 warn!(
@@ -3377,13 +3707,16 @@ impl SecureMqttClient {
             }
         };
 
-        if session.session_id != session_id {
-            warn!(
-                "Dropping session packet from {}: session_id mismatch",
-                sender_id
-            );
-            return Ok(None);
-        }
+        let session = match peer_sessions.get_mut_by_session_id(&session_id) {
+            Some(s) => s,
+            None => {
+                warn!(
+                    "Dropping session packet from {}: session_id mismatch",
+                    sender_id
+                );
+                return Ok(None);
+            }
+        };
 
         match session.decrypt_v2(sender_id, &self.client_id, topic, msg_num, ciphertext) {
             Ok(pt) => Ok(Some(pt)),
@@ -3426,6 +3759,10 @@ impl SecureMqttClient {
     }
 
     fn handle_attestation_challenge(&mut self, challenge: AttestationChallenge) -> Result<()> {
+        if self.drop_if_fleet_policy_stale("attestation challenge")? {
+            return Ok(());
+        }
+
         // Generate quote bound to challenger nonce.
         let quote = self
             .provider
@@ -3448,6 +3785,18 @@ impl SecureMqttClient {
     }
 
     fn handle_attestation_quote(&mut self, msg: AttestationQuoteMessage) -> Result<()> {
+        if self.drop_if_fleet_policy_stale("attestation quote")? {
+            return Ok(());
+        }
+        if let Err(e) = self.ensure_storage_assurance("attestation quote") {
+            warn!("Dropping attestation quote: {}", e);
+            return Ok(());
+        }
+        if let Err(e) = self.ensure_revocation_caught_up("attestation quote") {
+            warn!("Dropping attestation quote: {}", e);
+            return Ok(());
+        }
+
         let expected_nonce = match self.pending_attestation.get(&msg.subject_id) {
             Some(n) => n.clone(),
             None => {
@@ -3607,6 +3956,14 @@ impl SecureMqttClient {
     /// Handle Key Exchange messages (Identity Verification)
     fn handle_key_exchange(&mut self, sender_id: &str, mut keys: PeerKeys) -> Result<()> {
         if self.drop_if_fleet_policy_stale("mqtt key announcement")? {
+            return Ok(());
+        }
+        if let Err(e) = self.ensure_storage_assurance("mqtt key announcement") {
+            warn!("Dropping key announcement from {}: {}", sender_id, e);
+            return Ok(());
+        }
+        if let Err(e) = self.ensure_revocation_caught_up("mqtt key announcement") {
+            warn!("Dropping key announcement from {}: {}", sender_id, e);
             return Ok(());
         }
 
