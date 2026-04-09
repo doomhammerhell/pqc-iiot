@@ -360,7 +360,7 @@ impl SoftwareTpm {
             match crate::persistence::AtomicFileStore::read_with_limit(&path, MAX_SESSION_BYTES) {
                 Ok(d) => d,
                 Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                    return Err(Error::CryptoError("Session Not Found".into()));
+                    return Err(Error::IoError(e));
                 }
                 Err(e) => return Err(e),
             };
@@ -420,6 +420,10 @@ impl SecurityProvider for SoftwareTpm {
     fn export_secret_keys(&self) -> Option<crate::security::provider::ExportedIdentitySecrets> {
         // TPM keys are non-exportable by design.
         None
+    }
+
+    fn provider_kind(&self) -> &'static str {
+        "software-tpm"
     }
 
     fn seal_data(&self, label: &str, data: &[u8]) -> Result<()> {

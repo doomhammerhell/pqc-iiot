@@ -1,6 +1,15 @@
 # Secure CoAP Integration
 
-The `SecureCoapClient` provides secure Request/Response patterns over UDP using Hybrid Encryption.
+This repository currently provides two CoAP security modes:
+
+- `SecureCoapClient`: **payload authenticity** only (Falcon signature appended to the CoAP payload).
+- `SecureCoapSessionClient`: **session-based confidentiality + integrity + replay protection** using an authenticated handshake and AEAD (not OSCORE/DTLS).
+
+`SecureCoapClient` provides payload authenticity for CoAP messages by attaching a Falcon signature to the CoAP payload and verifying responses against a pinned peer public key.
+
+It is intentionally minimal and does not provide confidentiality or replay protection.
+
+For safety/security-critical IIoT deployments, you should run CoAP over OSCORE or DTLS (or an equivalent authenticated secure transport). The session-based mode is a pragmatic security context but is not a standards-based OSCORE/DTLS implementation.
 
 ## Example: Secure GET Request
 
@@ -10,16 +19,19 @@ use std::net::SocketAddr;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Initialize Client
-    let client = SecureCoapClient::new()?;
+    //
+    // IMPORTANT: you must pin the peer's Falcon public key for response verification.
+    // In production, obtain this from provisioning (not from the network/broker).
+    let peer_sig_pk: Vec<u8> = vec![]; // provisioned
+    let client = SecureCoapClient::new()?.with_peer_sig_pk(peer_sig_pk);
     
     let server_addr: SocketAddr = "127.0.0.1:5683".parse()?;
     
-    // 2. Send Encrypted GET
-    // Automatically performs handshake if session keys are missing
+    // 2. Send request (payload is signed by the client)
     let response = client.get(server_addr, "sensors/temp")?;
     
     // 3. Verify Response
-    // Decrypts payload and verifies Falcon signature
+    // Verifies Falcon signature using the pinned peer public key and returns the unsigned payload.
     let payload = client.verify_response(&response)?;
     
     println!("Response: {:?}", String::from_utf8_lossy(&payload));
@@ -31,47 +43,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Protocol Specification
 
-PQC-IIoT implements **Object Security for Constrained RESTful Environments (OSCORE)**-inspired application layer security, adapted for Post-Quantum primitives.
+This repository does not implement OSCORE/DTLS. The protocol formats below are local to this project.
 
-### Packet Format (Request & Response)
+### `SecureCoapClient` Payload Format (Request & Response)
 
-The CoAP payload is replaced entirely by the PQC blob.
+The CoAP payload is:
 
-#### 1. Secure Request (Client -> Server)
+`[message][signature][sig_len_be_u16]`
 
-| Section | Field | Size (Bytes) | Description |
-| :--- | :--- | :--- | :--- |
-| **Header** | **Version** | 1 | `0x01` |
-| | **Capsule** | 1088 | Kyber-768 Ciphertext (Key Exchange) |
-| **Body** | **Nonce** | 12 | AES-GCM Nonce |
-| | **Ciphertext** | $Len(P) + 16$ | AES-256-GCM Encrypted Payload |
-| **Auth** | **Signature** | ~666 | Falcon-512 Signature of entire packet |
+Where:
 
-**Total Overhead**: ~1770 bytes + Payload.
-*Note: This necessitates specific CoAP Block-Wise Transfer (Block1) support or high-MTU networks (WiFi/Ethernet).*
+- `message` is the application payload bytes
+- `signature` is a Falcon detached signature
+- `sig_len_be_u16` is the signature length (big-endian)
 
-#### 2. Secure Response (Server -> Client)
+This format is simple but incomplete for critical systems:
 
-Since the session key is established in the Request, the Response does NOT need a new Kyber Capsule. It reuses the session key derived from the Request (or a derived session key).
+- it does not bind method/path/options into the signature
+- it does not provide anti-replay (no nonce/counter)
+- it does not provide confidentiality
 
-| Section | Field | Size (Bytes) | Description |
-| :--- | :--- | :--- | :--- |
-| **Body** | **Nonce** | 12 | New AES-GCM Nonce |
-| | **Ciphertext** | $Len(P) + 16$ | AES-256-GCM Encrypted Response |
-| **Auth** | **Signature** | ~666 | Falcon-512 Signature |
+If you need those properties, use OSCORE/DTLS and treat this signature layer as redundant defense-in-depth (or remove it to avoid cost).
 
-**Total Overhead**: ~680 bytes + Payload.
+### `SecureCoapSessionClient` Session Mode (non-OSCORE)
 
-### Handshake Flow
+The session client/server (`SecureCoapSessionClient` / `SecureCoapSessionServer`) implement:
 
-1.  **Client** generates ephemeral Kyber KeyPair (or uses static if pre-provisioned).
-2.  **Client** encapsulates against Server's Static Public Key -> `Capsule`, `SharedSecret`.
-3.  **Client** encrypts Request Payload with `SharedSecret`.
-4.  **Client** signs `[Capsule | Nonce | Ciphertext]` with Client's Falcon Private Key.
-5.  **Server** receives, verifies Falcon Signature (Authentication).
-6.  **Server** decapsulates `Capsule` -> `SharedSecret`.
-7.  **Server** decrypts Payload.
-8.  **Server** processes request, generates Response.
-9.  **Server** encrypts Response with `SharedSecret` (and new Nonce).
-10. **Server** signs Response.
+- an authenticated session handshake (Falcon signatures) on `pqc/session/init`
+- hybrid forward secrecy from ephemeral Kyber + ephemeral X25519
+- AEAD payload protection using AES-256-GCM with per-message key evolution
+- bounded out-of-order receive using a skipped-key window (anti-replay within the session)
 
+This is an application-level security context, not OSCORE:
+
+- it does not define a standardized security context for CoAP options beyond what is bound in the AAD
+- it does not persist session replay state across restarts (a reboot drops sessions)

@@ -40,6 +40,7 @@ pub fn start_mqtt_broker(port: u16) {
 }
 
 // Simple CoAP server mock
+#[allow(dead_code)]
 pub fn start_coap_server(port: u16) {
     thread::spawn(move || {
         let socket = UdpSocket::bind(format!("127.0.0.1:{}", port)).unwrap();

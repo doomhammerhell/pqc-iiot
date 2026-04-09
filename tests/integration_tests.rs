@@ -4,6 +4,7 @@ use pqc_iiot::provisioning::{FactoryIdentity, OperationalCa};
 use pqc_iiot::Falcon;
 use pqc_iiot::{coap_secure::SecureCoapClient, mqtt_secure::SecureMqttClient};
 use rumqttc::{Client as RumqttClient, MqttOptions, QoS};
+use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
 mod common;
@@ -413,6 +414,174 @@ fn test_strict_mode() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn test_distributed_revocation_blocks_peer() -> Result<(), Box<dyn std::error::Error>> {
+    let port = 19856;
+    common::start_mqtt_broker(port);
+
+    let suffix: u32 = rand::random();
+    let key_prefix = format!("pqc/revoke_keys_{}/", suffix);
+    let revocation_topic = format!("pqc/revocations/test_{}", suffix);
+    let topic = format!("secure/revoke_chat_{}", suffix);
+
+    let falcon = Falcon::new();
+    let (ca_pk, ca_sk) = falcon.generate_keypair().expect("ca keygen");
+    let ca_sk_for_revocation = ca_sk.clone();
+    let mut ca = OperationalCa::new(ca_pk.clone(), ca_sk);
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let bob_id = format!("bob_revoke_{}", suffix);
+    let alice_id = format!("alice_revoke_{}", suffix);
+
+    // Bob (receiver)
+    let (bob_factory_pk, bob_factory_sk) = falcon.generate_keypair().expect("factory keygen");
+    let bob_factory = FactoryIdentity::new(bob_factory_pk, bob_factory_sk);
+    let mut bob = SecureMqttClient::new("localhost", port, &bob_id)?
+        .with_key_prefix(&key_prefix)
+        .with_revocation_topic(&revocation_topic)
+        .with_strict_mode(true);
+    ca.allow_device(&bob_id, bob_factory.pubkey.clone());
+    let bob_join = bob_factory.create_join_request(
+        &bob_id,
+        &bob.get_kem_public_key(),
+        &bob.get_identity_key(),
+        &bob.get_x25519_public_key(),
+    )?;
+    let bob_cert = ca.issue_operational_cert(&bob_join, now, 3600)?;
+    bob = bob
+        .with_trust_anchor_ca_sig_pk(ca_pk.clone())
+        .with_operational_cert(bob_cert);
+    bob.bootstrap()?;
+    bob.subscribe(&topic)?;
+
+    // Alice (sender)
+    let (alice_factory_pk, alice_factory_sk) = falcon.generate_keypair().expect("factory keygen");
+    let alice_factory = FactoryIdentity::new(alice_factory_pk, alice_factory_sk);
+    let mut alice = SecureMqttClient::new("localhost", port, &alice_id)?
+        .with_key_prefix(&key_prefix)
+        .with_revocation_topic(&revocation_topic)
+        .with_strict_mode(true);
+    ca.allow_device(&alice_id, alice_factory.pubkey.clone());
+    let alice_join = alice_factory.create_join_request(
+        &alice_id,
+        &alice.get_kem_public_key(),
+        &alice.get_identity_key(),
+        &alice.get_x25519_public_key(),
+    )?;
+    let alice_cert = ca.issue_operational_cert(&alice_join, now, 3600)?;
+    alice = alice
+        .with_trust_anchor_ca_sig_pk(ca_pk.clone())
+        .with_operational_cert(alice_cert.clone());
+    alice.bootstrap()?;
+
+    // Drive both until they're mutually ready.
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(5) {
+        bob.poll(|_, _| {})?;
+        alice.poll(|_, _| {})?;
+        if bob.is_peer_ready(&alice_id) && alice.is_peer_ready(&bob_id) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        bob.is_peer_ready(&alice_id),
+        "Bob should accept Alice before revocation"
+    );
+    assert!(
+        alice.is_peer_ready(&bob_id),
+        "Alice should learn Bob keys before sending"
+    );
+
+    // Sanity: message is delivered before revocation.
+    alice.publish_encrypted(&topic, b"BEFORE_REVOKE", &bob_id)?;
+    let start = Instant::now();
+    let mut got_before = false;
+    while start.elapsed() < Duration::from_secs(2) {
+        bob.poll(|t, p| {
+            if t == topic && p == b"BEFORE_REVOKE" {
+                got_before = true;
+            }
+        })?;
+        if got_before {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(got_before, "Expected message delivery before revocation");
+
+    // Publish a CA-signed revocation update for Alice's certified key_id.
+    let mut update = pqc_iiot::security::revocation::RevocationUpdate {
+        version: pqc_iiot::security::revocation::RevocationUpdate::VERSION_V1,
+        seq: 1,
+        issued_at: now,
+        entries: vec![pqc_iiot::security::revocation::RevocationEntry {
+            device_id: alice_id.clone(),
+            key_id: alice_cert.key_id.clone(),
+        }],
+        signature: Vec::new(),
+    };
+    update.sign(&ca_sk_for_revocation, &revocation_topic)?;
+    let payload = serde_json::to_vec(&update)?;
+
+    let mut opts = MqttOptions::new(format!("revoke_pub_{}", suffix), "localhost", port);
+    opts.set_clean_session(true);
+    let (mut pub_client, mut pub_conn) = RumqttClient::new(opts, 10);
+    let pub_handle = std::thread::spawn(move || {
+        for notification in pub_conn.iter() {
+            if notification.is_err() {
+                break;
+            }
+        }
+    });
+    pub_client.publish(revocation_topic.clone(), QoS::AtLeastOnce, true, payload)?;
+    pub_client.disconnect()?;
+    drop(pub_client);
+    pub_handle
+        .join()
+        .expect("revocation publisher thread panicked");
+
+    // Wait until Bob applies the revocation (peer readiness drops).
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(3) {
+        bob.poll(|_, _| {})?;
+        if !bob.is_peer_ready(&alice_id) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        !bob.is_peer_ready(&alice_id),
+        "Bob must mark Alice not-ready after revocation"
+    );
+
+    // After revocation, encrypted messages must be dropped.
+    alice.publish_encrypted(&topic, b"AFTER_REVOKE", &bob_id)?;
+    let start = Instant::now();
+    let mut got_after = false;
+    while start.elapsed() < Duration::from_millis(600) {
+        bob.poll(|t, p| {
+            if t == topic && p == b"AFTER_REVOKE" {
+                got_after = true;
+            }
+        })?;
+        if got_after {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        !got_after,
+        "Bob must drop messages from revoked key_id even if signature/decrypt would succeed"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_attestation_gates_trust() -> Result<(), Box<dyn std::error::Error>> {
     let port = 29837;
     common::start_mqtt_broker(port);
@@ -649,8 +818,19 @@ fn test_encrypted_message_rejects_invalid_signature_even_if_parses(
     )?;
 
     let (_mallory_pk, mallory_sk) = falcon.generate_keypair().expect("mallory keygen");
+    let digest = {
+        let mut hasher = Sha256::new();
+        hasher.update(b"pqc-iiot:mqtt-msg:v1");
+        hasher.update((alice_id.len() as u16).to_be_bytes());
+        hasher.update(alice_id.as_bytes());
+        hasher.update((topic.len() as u16).to_be_bytes());
+        hasher.update(topic.as_bytes());
+        hasher.update((encrypted_blob.len() as u32).to_be_bytes());
+        hasher.update(&encrypted_blob);
+        hasher.finalize()
+    };
     let forged_signature = falcon
-        .sign(&mallory_sk, &encrypted_blob)
+        .sign(&mallory_sk, digest.as_slice())
         .expect("mallory sign");
 
     let sender_id_bytes = alice_id.as_bytes();
@@ -1095,7 +1275,8 @@ fn test_encryption_at_rest() -> Result<(), Box<dyn std::error::Error>> {
     // let _ = env_logger::builder().is_test(true).try_init();
 
     // Use a unique client ID for this test to avoid conflict with other tests
-    let client_id = "test_encrypted_client";
+    let suffix: u32 = rand::random();
+    let client_id = format!("test_encrypted_client_{}", suffix);
     let key = [0x42u8; 32]; // 32-byte key
     let wrong_key = [0x00u8; 32];
 
@@ -1105,12 +1286,26 @@ fn test_encryption_at_rest() -> Result<(), Box<dyn std::error::Error>> {
     if identity_path.exists() {
         std::fs::remove_file(&identity_path)?;
     }
+    let keystore_path = data_dir.join(format!("keystore_{}.json", client_id));
+    if keystore_path.exists() {
+        std::fs::remove_file(&keystore_path)?;
+    }
+    for label in [
+        format!("pqc-iiot:time-floor:v1:{}", client_id),
+        format!("pqc-iiot:keystore-gen:v1:{}", client_id),
+    ] {
+        let digest = Sha256::digest(label.as_bytes());
+        let sealed_path = data_dir.join(format!("sealed_{}.bin", hex::encode(digest)));
+        if sealed_path.exists() {
+            std::fs::remove_file(sealed_path)?;
+        }
+    }
 
     // 1. Create and Save (Encrypted)
     {
         // Broker is not needed for this test, just file ops, but new() connects options.
         // We can pass dummy broker as we won't call bootstrap/connect
-        let client = SecureMqttClient::new_encrypted("localhost", 1883, client_id, &key)?;
+        let client = SecureMqttClient::new_encrypted("localhost", 1883, &client_id, &key)?;
         client.save_identity()?; // Should save encrypted
     }
 
@@ -1123,20 +1318,20 @@ fn test_encryption_at_rest() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3. Load with Correct Key
     {
-        let client_result = SecureMqttClient::new_encrypted("localhost", 1883, client_id, &key);
+        let client_result = SecureMqttClient::new_encrypted("localhost", 1883, &client_id, &key);
         assert!(client_result.is_ok(), "Should load with correct key");
     }
 
     // 4. Load with Wrong Key
     {
         let client_result =
-            SecureMqttClient::new_encrypted("localhost", 1883, client_id, &wrong_key);
+            SecureMqttClient::new_encrypted("localhost", 1883, &client_id, &wrong_key);
         assert!(client_result.is_err(), "Should fail with wrong key");
     }
 
     // 5. Load with No Key (expecting JSON)
     {
-        let client_result = SecureMqttClient::new("localhost", 1883, client_id);
+        let client_result = SecureMqttClient::new("localhost", 1883, &client_id);
         assert!(
             client_result.is_err(),
             "Should fail with no key (parsing encrypted as JSON)"
