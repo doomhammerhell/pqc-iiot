@@ -1,223 +1,90 @@
-# Secure CoAP Client
+# CoAP Security (What Exists vs. What Is “Industrial”)
 
-This document provides detailed information about the secure CoAP client implementation in PQC-IIoT.
+This crate currently exposes **two CoAP security modes** under `pqc_iiot::coap_secure` when `coap-std` is enabled:
 
-## Table of Contents
+1. `SecureCoapClient`: **signed payloads** (authenticity only).
+2. `SecureCoapSessionClient` / `SecureCoapSessionServer`: a **custom session + symmetric ratchet** that provides confidentiality + integrity + replay protection at the application layer.
 
-- [Overview](#overview)
-- [Usage](#usage)
-- [Security Features](#security-features)
-- [Error Handling](#error-handling)
-- [Performance](#performance)
-- [Examples](#examples)
+Neither mode is a standards-compliant replacement for **OSCORE (RFC 8613)** or **DTLS**. For critical IIoT deployments where interoperability and compliance matter, OSCORE/DTLS is still the correct transport/security boundary.
 
-## Overview
+## Threat Model (Practical)
 
-The `SecureCoapClient` provides a secure CoAP client implementation with post-quantum cryptography. It uses Kyber for key encapsulation and Falcon for message signing, making it suitable for resource-constrained IIoT devices.
+- The network is adversarial: MITM, replay, reordering, injection.
+- UDP transport provides no integrity/confidentiality by itself.
+- You must assume loss, duplication, and reordering.
+- Identity must be explicit (pinned keys or provisioning-backed certs); TOFU is not a “critical” baseline.
 
-## Usage
+## Mode A: Signed Payloads (`SecureCoapClient`)
 
-### Basic Setup
+This mode signs the application payload and appends a detached Falcon signature:
+
+```
+[message][signature][sig_len_be_u16]
+```
+
+### Properties
+
+- Provides **end-to-end authenticity** *if* the peer’s Falcon public key is pinned.
+- Does **not** provide confidentiality.
+- Does **not** provide replay protection (beyond whatever the application does at higher layers).
+- Does **not** protect CoAP headers/options (only the payload).
+
+### Usage Sketch
 
 ```rust
 use pqc_iiot::coap_secure::SecureCoapClient;
 use std::net::SocketAddr;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create secure CoAP client
-    let client = SecureCoapClient::new()?;
-    
-    // Server address
-    let server_addr = "127.0.0.1:5683".parse::<SocketAddr>()?;
-    
-    Ok(())
-}
+let server: SocketAddr = "127.0.0.1:5683".parse().unwrap();
+
+// Client generates its own signing keys on creation.
+let mut client = SecureCoapClient::new().unwrap()
+    .with_peer_sig_pk(/* pinned server Falcon pk */ vec![]);
+
+let resp = client.get(server, "sensors/temp").unwrap();
+let plaintext = client.verify_response(&resp).unwrap();
 ```
 
-### Sending Requests
+## Mode B: Custom Secure Sessions (`SecureCoapSessionClient`)
+
+This mode implements an authenticated session handshake over a fixed CoAP path and then encrypts subsequent payloads using:
+
+- Ephemeral Kyber KEM + ephemeral X25519 to derive initial chain keys.
+- A symmetric ratchet (HKDF) to evolve message keys.
+- AES-256-GCM for AEAD encryption.
+- A skipped-key window to tolerate bounded out-of-order delivery.
+- AAD binds the ciphertext to `(sender_id, receiver_id, code, path, token, session_id, msg_num)`.
+
+### Properties
+
+- Provides **confidentiality + integrity** of payloads after session establishment.
+- Provides **anti-replay** and bounded out-of-order tolerance.
+- Is not interoperable: **not OSCORE/DTLS** (no standards-based security context, no COSE/OSCORE option, no DTLS record layer).
+
+### Usage Sketch
 
 ```rust
-// Send a secure GET request
-let path = "sensors/temperature";
-let response = client.get(server_addr, path)?;
-
-// Send a secure POST request with payload
-let payload = b"25.5";
-let response = client.post(server_addr, path, payload)?;
-```
-
-### Resource Discovery
-
-```rust
-// Discover resources
-let resources = client.discover(server_addr)?;
-for resource in resources {
-    println!("Discovered resource: {}", resource);
-}
-```
-
-## Security Features
-
-### Message Protection
-
-- **Encryption**: Messages are encrypted using Kyber
-- **Signing**: Messages are signed using Falcon
-- **Replay Protection**: Message IDs and timestamps
-- **Path Validation**: Secure resource paths
-
-### Key Management
-
-- Automatic key rotation
-- Secure key storage
-- Session key establishment
-
-## Error Handling
-
-The client uses a custom error type for CoAP operations:
-
-```rust
-pub enum Error {
-    /// Network error
-    NetworkError(String),
-    /// Request error
-    RequestError(String),
-    /// Response error
-    ResponseError(String),
-    /// Security error
-    SecurityError(String),
-}
-```
-
-## Performance
-
-### Message Overhead
-
-| Component | Size (bytes) |
-|-----------|--------------|
-| Header    | 16           |
-| Signature | 64           |
-| Ciphertext| 128          |
-
-### Processing Time
-
-| Operation | Time (ms) |
-|-----------|-----------|
-| GET       | 1.5       |
-| POST      | 1.8       |
-| Discovery | 2.1       |
-
-## Best Practices
-
-1. **Connection Management**
-   - Use DTLS for transport security
-   - Implement retry logic
-   - Monitor connection health
-
-2. **Resource Management**
-   - Cache discovered resources
-   - Implement observation patterns
-   - Handle resource updates
-
-3. **Security**
-   - Rotate keys regularly
-   - Validate resource paths
-   - Monitor for anomalies
-
-## Examples
-
-### Complete Example
-
-```rust
-use pqc_iiot::coap_secure::SecureCoapClient;
+use pqc_iiot::coap_secure::SecureCoapSessionClient;
 use std::net::SocketAddr;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create client
-    let client = SecureCoapClient::new()?;
-    
-    // Server address
-    let server_addr = "127.0.0.1:5683".parse::<SocketAddr>()?;
-    
-    // Discover resources
-    let resources = client.discover(server_addr)?;
-    println!("Discovered resources: {:?}", resources);
-    
-    // Send temperature reading
-    let path = "sensors/temperature";
-    let payload = b"25.5";
-    let response = client.post(server_addr, path, payload)?;
-    println!("Response: {:?}", response);
-    
-    Ok(())
-}
+let server: SocketAddr = "127.0.0.1:5683".parse().unwrap();
+
+// peer_sig_pk must be pinned (server Falcon pk).
+let mut client = SecureCoapSessionClient::new("device-1", "gw-1", /* peer_sig_pk */ vec![])
+    .unwrap();
+
+client.connect(server).unwrap();
+let resp = client.get(server, "test/resource").unwrap();
+assert!(!resp.message.payload.is_empty());
 ```
 
-## Integration
+## “Industrial” Path (OSCORE/DTLS)
 
-### With IIoT Systems
+If the release target is **critical IIoT**, the correct endpoint is not “custom crypto in a CoAP module”; it is a **standards-defined transport/security context** with explicit compliance story:
 
-The secure CoAP client is designed to integrate with IIoT systems:
+- **OSCORE** for CoAP over UDP, typically with **EDHOC** for key establishment.
+- **DTLS** for securing UDP transport when OSCORE is not viable.
 
-1. **Device Management**
-   - Secure device registration
-   - Firmware updates
-   - Configuration management
+This crate currently treats OSCORE/DTLS as out-of-scope for the `coap-std` implementation and documents the custom session mode as a practical building block, not an interoperability baseline.
 
-2. **Data Collection**
-   - Secure sensor data
-   - Resource observation
-   - Historical data access
-
-3. **Command and Control**
-   - Secure command execution
-   - Status monitoring
-   - Error reporting
-
-## Troubleshooting
-
-Common issues and solutions:
-
-1. **Connection Issues**
-   - Check network connectivity
-   - Verify server configuration
-   - Review security settings
-
-2. **Performance Issues**
-   - Monitor request rates
-   - Check resource usage
-   - Optimize payload size
-
-3. **Security Issues**
-   - Verify key rotation
-   - Check signature validation
-   - Monitor for attacks
-
-## Advanced Features
-
-### Resource Observation
-
-```rust
-// Observe a resource
-let observer = client.observe(server_addr, path)?;
-
-// Handle updates
-while let Some(update) = observer.next_update() {
-    println!("Resource updated: {:?}", update);
-}
-```
-
-### Block-wise Transfers
-
-```rust
-// Send large payload in blocks
-let large_payload = vec![0u8; 1024];
-let response = client.post_blockwise(server_addr, path, &large_payload)?;
-```
-
-### Multicast Support
-
-```rust
-// Send multicast request
-let multicast_addr = "224.0.1.187:5683".parse::<SocketAddr>()?;
-let responses = client.multicast_get(multicast_addr, path)?;
-``` 
+If you want this repository to be “market standard”, the next concrete engineering step is to add an OSCORE/DTLS backend (feature-gated) and make the custom session mode explicitly “experimental / internal”.

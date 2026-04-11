@@ -103,6 +103,57 @@ pub trait SecurityProvider: Send + Sync {
     /// Unseal data from persistent storage.
     fn unseal_data(&self, label: &str) -> Result<Vec<u8>>;
 
+    /// Read a sealed monotonic `u64` counter from the provider.
+    ///
+    /// This is an explicit primitive used to model monotonic state that must survive restarts:
+    /// - secure time floors
+    /// - replay windows / sequence counters
+    /// - policy/revocation sequence gates
+    ///
+    /// Security semantics:
+    /// - The counter is only rollback-resistant when `is_rollback_resistant_storage() == true`.
+    /// - The default implementation persists the counter via `seal_data/unseal_data`.
+    ///   Hardware providers should override these methods to use TPM NV counters / TEE monotonic
+    ///   storage when available.
+    fn sealed_monotonic_u64_get(&self, label: &str) -> Result<Option<u64>> {
+        match self.unseal_data(label) {
+            Ok(blob) => {
+                if blob.len() != 8 {
+                    return Err(Error::CryptoError(format!(
+                        "Invalid sealed u64 length for {}: {}",
+                        label,
+                        blob.len()
+                    )));
+                }
+                let mut buf = [0u8; 8];
+                buf.copy_from_slice(&blob);
+                Ok(Some(u64::from_be_bytes(buf)))
+            }
+            Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Advance a sealed monotonic counter if `candidate > current`.
+    ///
+    /// Returns `Ok(true)` when the counter advanced, `Ok(false)` otherwise.
+    fn sealed_monotonic_u64_advance_to(&self, label: &str, candidate: u64) -> Result<bool> {
+        let current = self.sealed_monotonic_u64_get(label)?.unwrap_or(0);
+        if candidate > current {
+            self.seal_data(label, &candidate.to_be_bytes())?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Increment a sealed monotonic counter by 1, persist it, and return the new value.
+    fn sealed_monotonic_u64_increment(&self, label: &str) -> Result<u64> {
+        let current = self.sealed_monotonic_u64_get(label)?.unwrap_or(0);
+        let next = current.saturating_add(1).max(1);
+        self.seal_data(label, &next.to_be_bytes())?;
+        Ok(next)
+    }
+
     /// Generate an Attestation Quote.
     fn generate_quote(
         &self,
