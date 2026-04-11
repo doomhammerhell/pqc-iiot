@@ -82,6 +82,10 @@ pub mod crypto {
 #[cfg(feature = "mqtt")]
 pub mod mqtt_secure;
 
+/// MQTT control-plane helpers (policy/revocation sync responder).
+#[cfg(feature = "mqtt")]
+pub mod mqtt_control_plane;
+
 /// Secure CoAP client implementation
 #[cfg(feature = "coap")]
 pub mod coap_secure;

@@ -6,7 +6,6 @@ use crate::security::audit::{AuditLog, AuditLogger, ChainedAuditLogger, Security
 use crate::security::hybrid;
 use crate::security::keystore::{KeyStore, PeerKeys};
 use crate::security::metrics::SecurityMetrics;
-use crate::security::monotonic::{seal_u64, unseal_u64};
 use crate::security::policy::FleetPolicyUpdate;
 use crate::security::provider::{SecurityProvider, SoftwareSecurityProvider};
 use crate::security::revocation::RevocationUpdate;
@@ -111,6 +110,12 @@ const DEFAULT_GLOBAL_DECRYPT_BUDGET_CAPACITY: u32 = 80;
 const DEFAULT_GLOBAL_DECRYPT_BUDGET_REFILL_PER_SEC: u32 = 40;
 
 const DEFAULT_BUDGET_MAX_PEERS: usize = 10_000;
+
+/// Maximum bytes read from a keystore file when computing integrity digests.
+const MAX_KEYSTORE_FILE_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
+
+const KEYSTORE_META_VERSION_V1: u8 = 1;
+const KEYSTORE_META_BYTES_V1: usize = 1 + 8 + 32;
 
 /// Fixed-rate token bucket.
 #[derive(Debug, Clone)]
@@ -218,6 +223,35 @@ fn storage_id_for(client_id: &str) -> String {
     }
 }
 
+fn encode_keystore_meta_v1(generation: u64, hash: [u8; 32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(KEYSTORE_META_BYTES_V1);
+    out.push(KEYSTORE_META_VERSION_V1);
+    out.extend_from_slice(&generation.to_be_bytes());
+    out.extend_from_slice(&hash);
+    out
+}
+
+fn decode_keystore_meta_v1(blob: &[u8]) -> Result<(u64, [u8; 32])> {
+    if blob.len() != KEYSTORE_META_BYTES_V1 {
+        return Err(Error::CryptoError(format!(
+            "Invalid keystore meta length: {}",
+            blob.len()
+        )));
+    }
+    if blob[0] != KEYSTORE_META_VERSION_V1 {
+        return Err(Error::ProtocolError(format!(
+            "Unsupported keystore meta version: {}",
+            blob[0]
+        )));
+    }
+    let mut gen_bytes = [0u8; 8];
+    gen_bytes.copy_from_slice(&blob[1..9]);
+    let generation = u64::from_be_bytes(gen_bytes);
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&blob[9..]);
+    Ok((generation, hash))
+}
+
 /// Secure MQTT client using post-quantum cryptography
 pub struct SecureMqttClient {
     options: MqttOptions,
@@ -287,6 +321,18 @@ pub struct SecureMqttClient {
     policy_topic: String,
     policy_sync_topic: String,
     fleet_policy: Option<FleetPolicyUpdate>,
+    /// Sealed monotonic floor for the fleet policy sequence.
+    ///
+    /// This is meaningful only when the `SecurityProvider` is backed by rollback-resistant
+    /// storage (TPM NV / HSM / TEE monotonic storage / WORM remote append-only).
+    ///
+    /// Used to detect policy rollback across restarts and fail closed under partitions.
+    fleet_policy_seq_floor: u64,
+    /// Sealed monotonic floor for the revocation sequence (CRL/denylist updates).
+    ///
+    /// This provides rollback resistance for emergency revocations under the same assumptions as
+    /// `fleet_policy_seq_floor`.
+    revocation_seq_floor: u64,
 
     // Asymmetric-cost DoS budgets (token buckets).
     sig_verify_budget: TokenBucketMap,
@@ -1314,6 +1360,8 @@ impl SecureMqttClient {
             policy_topic: DEFAULT_POLICY_TOPIC.to_string(),
             policy_sync_topic: DEFAULT_POLICY_SYNC_TOPIC.to_string(),
             fleet_policy: None,
+            fleet_policy_seq_floor: 0,
+            revocation_seq_floor: 0,
             sig_verify_budget: TokenBucketMap::new(
                 DEFAULT_SIGVERIFY_BUDGET_CAPACITY,
                 DEFAULT_SIGVERIFY_BUDGET_REFILL_PER_SEC,
@@ -1356,13 +1404,29 @@ impl SecureMqttClient {
 
         // Initialize keystore anti-rollback binding after any legacy migration flush.
         client.init_keystore_anti_rollback()?;
+        client.load_revocation_seq_floor()?;
+        client.load_fleet_policy_seq_floor()?;
 
         if let Some(policy) = client.load_sealed_fleet_policy()? {
             if let Some(ca_pk) = client.trust_anchor_ca_sig_pk.clone() {
                 if let Err(e) = policy.verify(&ca_pk, &client.policy_topic) {
                     warn!("Ignoring sealed fleet policy: {}", e);
                 } else {
-                    client.apply_fleet_policy(policy);
+                    if policy.seq < client.fleet_policy_seq_floor {
+                        warn!(
+                            "Ignoring sealed fleet policy: seq rollback detected (policy_seq={} < sealed_floor={})",
+                            policy.seq, client.fleet_policy_seq_floor
+                        );
+                    } else {
+                        // Crash window repair: policy was sealed but the monotonic floor wasn't advanced.
+                        let label = client.fleet_policy_seq_label();
+                        let _ = client
+                            .provider
+                            .sealed_monotonic_u64_advance_to(&label, policy.seq)?;
+                        client.fleet_policy_seq_floor =
+                            client.fleet_policy_seq_floor.max(policy.seq);
+                        client.apply_fleet_policy(policy);
+                    }
                 }
             }
         }
@@ -1469,6 +1533,8 @@ impl SecureMqttClient {
             policy_topic: DEFAULT_POLICY_TOPIC.to_string(),
             policy_sync_topic: DEFAULT_POLICY_SYNC_TOPIC.to_string(),
             fleet_policy: None,
+            fleet_policy_seq_floor: 0,
+            revocation_seq_floor: 0,
             sig_verify_budget: TokenBucketMap::new(
                 DEFAULT_SIGVERIFY_BUDGET_CAPACITY,
                 DEFAULT_SIGVERIFY_BUDGET_REFILL_PER_SEC,
@@ -1508,13 +1574,28 @@ impl SecureMqttClient {
 
         // Anchor keystore anti-rollback counter.
         client.init_keystore_anti_rollback()?;
+        client.load_revocation_seq_floor()?;
+        client.load_fleet_policy_seq_floor()?;
 
         if let Some(policy) = client.load_sealed_fleet_policy()? {
             if let Some(ca_pk) = client.trust_anchor_ca_sig_pk.clone() {
                 if let Err(e) = policy.verify(&ca_pk, &client.policy_topic) {
                     warn!("Ignoring sealed fleet policy: {}", e);
                 } else {
-                    client.apply_fleet_policy(policy);
+                    if policy.seq < client.fleet_policy_seq_floor {
+                        warn!(
+                            "Ignoring sealed fleet policy: seq rollback detected (policy_seq={} < sealed_floor={})",
+                            policy.seq, client.fleet_policy_seq_floor
+                        );
+                    } else {
+                        let label = client.fleet_policy_seq_label();
+                        let _ = client
+                            .provider
+                            .sealed_monotonic_u64_advance_to(&label, policy.seq)?;
+                        client.fleet_policy_seq_floor =
+                            client.fleet_policy_seq_floor.max(policy.seq);
+                        client.apply_fleet_policy(policy);
+                    }
                 }
             }
         }
@@ -1626,24 +1707,30 @@ impl SecureMqttClient {
 
     fn next_session_seq(&self, peer_id: &str) -> Result<u64> {
         let label = self.session_out_seq_label(peer_id);
-        let current = unseal_u64(&self.provider, &label)?.unwrap_or(0);
-        let next = current.saturating_add(1).max(1);
-        seal_u64(&self.provider, &label, next)?;
-        Ok(next)
+        self.provider.sealed_monotonic_u64_increment(&label)
     }
 
     fn last_inbound_session_seq(&self, peer_id: &str) -> Result<u64> {
         let label = self.session_in_seq_label(peer_id);
-        Ok(unseal_u64(&self.provider, &label)?.unwrap_or(0))
+        Ok(self.provider.sealed_monotonic_u64_get(&label)?.unwrap_or(0))
     }
 
     fn persist_inbound_session_seq(&self, peer_id: &str, seq: u64) -> Result<()> {
         let label = self.session_in_seq_label(peer_id);
-        seal_u64(&self.provider, &label, seq)
+        let _ = self.provider.sealed_monotonic_u64_advance_to(&label, seq)?;
+        Ok(())
     }
 
     fn fleet_policy_label(&self) -> String {
         format!("pqc-iiot:fleet-policy:v1:{}", self.storage_id)
+    }
+
+    fn fleet_policy_seq_label(&self) -> String {
+        format!("pqc-iiot:fleet-policy-seq:v1:{}", self.storage_id)
+    }
+
+    fn revocation_seq_label(&self) -> String {
+        format!("pqc-iiot:revocation-seq:v1:{}", self.storage_id)
     }
 
     fn load_sealed_fleet_policy(&self) -> Result<Option<FleetPolicyUpdate>> {
@@ -1665,6 +1752,35 @@ impl SecureMqttClient {
         let blob = serde_json::to_vec(policy)
             .map_err(|e| Error::ClientError(format!("Fleet policy serialization error: {}", e)))?;
         self.provider.seal_data(&label, &blob)
+    }
+
+    fn load_fleet_policy_seq_floor(&mut self) -> Result<()> {
+        let label = self.fleet_policy_seq_label();
+        let sealed = self.provider.sealed_monotonic_u64_get(&label)?.unwrap_or(0);
+        self.fleet_policy_seq_floor = self.fleet_policy_seq_floor.max(sealed);
+        Ok(())
+    }
+
+    fn load_revocation_seq_floor(&mut self) -> Result<()> {
+        let label = self.revocation_seq_label();
+        let sealed = self.provider.sealed_monotonic_u64_get(&label)?.unwrap_or(0);
+        self.revocation_seq_floor = self.revocation_seq_floor.max(sealed);
+
+        let file_seq = self.keystore.revocation_seq();
+        if file_seq > self.revocation_seq_floor {
+            // Crash window repair / upgrade path: keystore has advanced but the sealed floor hasn't.
+            let _ = self
+                .provider
+                .sealed_monotonic_u64_advance_to(&label, file_seq)?;
+            self.revocation_seq_floor = file_seq;
+        } else if file_seq < self.revocation_seq_floor {
+            warn!(
+                "revocation seq rollback detected: file_seq={} sealed_floor={} (storage_id={})",
+                file_seq, self.revocation_seq_floor, self.storage_id
+            );
+        }
+
+        Ok(())
     }
 
     fn apply_fleet_policy(&mut self, policy: FleetPolicyUpdate) {
@@ -1694,6 +1810,26 @@ impl SecureMqttClient {
         self.fleet_policy = Some(policy);
     }
 
+    fn ensure_fleet_policy_caught_up(&mut self, op: &str) -> Result<()> {
+        let floor = self.fleet_policy_seq_floor;
+        if floor == 0 {
+            return Ok(());
+        }
+        let have = self.fleet_policy.as_ref().map(|p| p.seq).unwrap_or(0);
+        if have < floor {
+            warn!(
+                "fleet policy state behind sealed floor: have_seq={} < floor_seq={} (op={})",
+                have, floor, op
+            );
+            let _ = self.maybe_request_fleet_policy_sync();
+            return Err(Error::ClientError(format!(
+                "Fleet policy state behind sealed floor (have_seq={} < floor_seq={}); refusing {}",
+                have, floor, op
+            )));
+        }
+        Ok(())
+    }
+
     fn ensure_storage_assurance(&self, op: &str) -> Result<()> {
         if self.require_rollback_resistant_storage && !self.provider.is_rollback_resistant_storage()
         {
@@ -1707,10 +1843,11 @@ impl SecureMqttClient {
     }
 
     fn ensure_revocation_caught_up(&mut self, op: &str) -> Result<()> {
-        let min = match self.min_revocation_seq {
-            Some(v) => v,
-            None => return Ok(()),
-        };
+        let min_policy = self.min_revocation_seq.unwrap_or(0);
+        let min = std::cmp::max(min_policy, self.revocation_seq_floor);
+        if min == 0 {
+            return Ok(());
+        }
         let have = self.keystore.revocation_seq();
         if have < min {
             warn!(
@@ -1805,6 +1942,7 @@ impl SecureMqttClient {
     }
 
     fn ensure_fleet_policy_fresh(&mut self, op: &str) -> Result<()> {
+        self.ensure_fleet_policy_caught_up(op)?;
         self.ensure_storage_assurance(op)?;
         self.ensure_revocation_caught_up(op)?;
         if self.is_fleet_policy_stale()? {
@@ -1818,6 +1956,18 @@ impl SecureMqttClient {
     }
 
     fn drop_if_fleet_policy_stale(&mut self, op: &str) -> Result<bool> {
+        let floor = self.fleet_policy_seq_floor;
+        if floor > 0 {
+            let have = self.fleet_policy.as_ref().map(|p| p.seq).unwrap_or(0);
+            if have < floor {
+                let _ = self.maybe_request_fleet_policy_sync();
+                warn!(
+                    "Dropping {}: fleet policy behind sealed floor (have_seq={} < floor_seq={})",
+                    op, have, floor
+                );
+                return Ok(true);
+            }
+        }
         if self.is_fleet_policy_stale()? {
             let _ = self.maybe_request_fleet_policy_sync();
             warn!("Dropping {}: fleet policy stale (ttl exceeded)", op);
@@ -1856,7 +2006,15 @@ impl SecureMqttClient {
         // Bind the persisted keystore generation to a sealed counter behind the provider.
         // In TPM/HSM-backed providers, this becomes an anti-rollback primitive for replay windows.
         let label = self.keystore_generation_label();
-        seal_u64(&self.provider, &label, gen)?;
+        let _ = self.provider.sealed_monotonic_u64_advance_to(&label, gen)?;
+
+        // Bind the file bytes to a sealed digest for tamper detection within the same generation.
+        let hash = self
+            .keystore_file_hash()?
+            .ok_or_else(|| Error::ClientError("Keystore missing after flush".into()))?;
+        let meta_label = self.keystore_meta_label();
+        let meta_bytes = encode_keystore_meta_v1(gen, hash);
+        self.provider.seal_data(&meta_label, &meta_bytes)?;
 
         Ok(())
     }
@@ -1875,15 +2033,32 @@ impl SecureMqttClient {
         format!("pqc-iiot:keystore-gen:v1:{}", self.storage_id)
     }
 
+    fn keystore_meta_label(&self) -> String {
+        format!("pqc-iiot:keystore-meta:v1:{}", self.storage_id)
+    }
+
+    fn keystore_file_hash(&self) -> Result<Option<[u8; 32]>> {
+        let path = self.keystore_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let blob = AtomicFileStore::read_with_limit(&path, MAX_KEYSTORE_FILE_BYTES)?;
+        let digest = Sha256::digest(&blob);
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&digest);
+        Ok(Some(out))
+    }
+
     fn init_keystore_anti_rollback(&mut self) -> Result<()> {
         let label = self.keystore_generation_label();
         let file_gen = self.keystore.generation();
-        let sealed_gen = unseal_u64(&self.provider, &label)?;
+        let sealed_gen = self.provider.sealed_monotonic_u64_get(&label)?;
+        let mut crash_repair = false;
 
         match sealed_gen {
             None => {
                 // First run (or legacy upgrade): anchor the counter to the current on-disk generation.
-                seal_u64(&self.provider, &label, file_gen)?;
+                self.provider.seal_data(&label, &file_gen.to_be_bytes())?;
             }
             Some(sealed) => {
                 if file_gen < sealed {
@@ -1895,7 +2070,8 @@ impl SecureMqttClient {
                 if file_gen > sealed {
                     // Accept a +1 mismatch as a crash window repair; anything larger is suspicious.
                     if file_gen == sealed.saturating_add(1) {
-                        seal_u64(&self.provider, &label, file_gen)?;
+                        self.provider.seal_data(&label, &file_gen.to_be_bytes())?;
+                        crash_repair = true;
                     } else {
                         return Err(Error::ClientError(format!(
                             "Keystore generation mismatch: file_gen={} sealed_gen={}",
@@ -1905,6 +2081,52 @@ impl SecureMqttClient {
                 }
             }
         }
+
+        // Bind the keystore file contents to a sealed digest to detect tampering within the same generation.
+        let meta_label = self.keystore_meta_label();
+        let meta = match self.provider.unseal_data(&meta_label) {
+            Ok(blob) => Some(blob),
+            Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e),
+        };
+
+        let file_hash = self.keystore_file_hash()?;
+        match (meta, file_hash) {
+            (None, None) => {
+                // No keystore on disk yet; nothing to bind.
+            }
+            (Some(_), None) => {
+                // Sealed meta exists but file is missing: treat as tamper/destructive rollback.
+                return Err(Error::ClientError(
+                    "Keystore missing but sealed meta present (possible tamper/rollback)".into(),
+                ));
+            }
+            (None, Some(hash)) => {
+                // Upgrade path: keystore exists but no sealed meta yet. Anchor it now.
+                let bytes = encode_keystore_meta_v1(file_gen, hash);
+                self.provider.seal_data(&meta_label, &bytes)?;
+            }
+            (Some(blob), Some(hash)) => {
+                let (meta_gen, meta_hash) = decode_keystore_meta_v1(&blob)?;
+                if meta_gen != file_gen {
+                    if crash_repair && meta_gen == file_gen.saturating_sub(1) {
+                        // Crash window repair: file advanced but meta didn't get sealed. Re-anchor.
+                        let bytes = encode_keystore_meta_v1(file_gen, hash);
+                        self.provider.seal_data(&meta_label, &bytes)?;
+                    } else {
+                        return Err(Error::ClientError(format!(
+                            "Keystore meta generation mismatch: meta_gen={} file_gen={}",
+                            meta_gen, file_gen
+                        )));
+                    }
+                } else if meta_hash != hash {
+                    return Err(Error::ClientError(
+                        "Keystore tamper detected (sealed digest mismatch)".into(),
+                    ));
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -3882,7 +4104,7 @@ impl SecureMqttClient {
             return Ok(());
         }
 
-        let current_seq = self.keystore.revocation_seq();
+        let current_seq = std::cmp::max(self.keystore.revocation_seq(), self.revocation_seq_floor);
         if update.seq <= current_seq {
             debug!(
                 "Ignoring revocation update: seq={} <= current_seq={}",
@@ -3905,6 +4127,11 @@ impl SecureMqttClient {
 
         // Persist immediately: revocations are emergency policy updates and must survive restarts.
         self.flush_keystore()?;
+        let label = self.revocation_seq_label();
+        let _ = self
+            .provider
+            .sealed_monotonic_u64_advance_to(&label, update.seq)?;
+        self.revocation_seq_floor = self.revocation_seq_floor.max(update.seq);
         self.persist_manager.notify_flushed();
 
         Ok(())
@@ -3937,7 +4164,10 @@ impl SecureMqttClient {
             return Ok(());
         }
 
-        let current_seq = self.fleet_policy.as_ref().map(|p| p.seq).unwrap_or(0);
+        let current_seq = std::cmp::max(
+            self.fleet_policy.as_ref().map(|p| p.seq).unwrap_or(0),
+            self.fleet_policy_seq_floor,
+        );
         if update.seq <= current_seq {
             debug!(
                 "Ignoring fleet policy update: seq={} <= current_seq={}",
@@ -3948,6 +4178,13 @@ impl SecureMqttClient {
 
         // Persist before applying so a crash after apply doesn't revert to an older policy.
         self.seal_fleet_policy(&update)?;
+        // Advance the sealed monotonic floor (anti-rollback). Hardware providers should back this
+        // with a TPM NV counter / TEE monotonic store.
+        let label = self.fleet_policy_seq_label();
+        let _ = self
+            .provider
+            .sealed_monotonic_u64_advance_to(&label, update.seq)?;
+        self.fleet_policy_seq_floor = self.fleet_policy_seq_floor.max(update.seq);
         self.apply_fleet_policy(update);
 
         Ok(())

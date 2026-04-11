@@ -116,7 +116,40 @@ Local revocation is tracked in the keystore and enforced during key exchange. Th
 
 - `KeyStore::revoke_key_id(peer_id, key_id)`
 
-This is intentionally local-policy-driven: revocation distribution is an operational problem (out-of-band channel, broker ACLs, or a control plane).
+Revocation distribution is an operational problem. The crate implements a minimal, broker-based control plane:
+
+- Signed revocation updates are published (retained) on `pqc/revocations/v1`.
+- Clients can publish best-effort sync requests on `pqc/revocations/sync/v1` to trigger a re-publish by a gateway/CA service.
+
+The responder side is intentionally minimal and lives in `pqc_iiot::mqtt_control_plane::MqttControlPlane`.
+
+### Fleet Policy (Signed, Monotonic, Partition-Aware)
+
+Fleet security policy is a CA-signed update stream (not broker-trusted configuration):
+
+- Updates are published (retained) on `pqc/policy/v1` as `FleetPolicyUpdate`.
+- Clients can publish sync requests on `pqc/policy/sync/v1`.
+
+Policy is treated as an explicit **security gate**:
+
+- `require_sessions`: disallows v1 per-message hybrid encryption and requires v2 sessions (ratchet).
+- `min_revocation_seq`: fail-closed until emergency revocations are caught up.
+- `ttl_secs`: when secure time is available, new handshakes and encrypted sends fail-closed once the policy becomes stale.
+- `require_rollback_resistant_storage`: fail-closed unless the provider backend is rollback resistant.
+
+### Anti-Rollback Floors (Sealed Monotonic Counters)
+
+Critical fleets must assume filesystem compromise and rollback attempts. To model this explicitly, the client persists:
+
+- A **secure time floor** (unix seconds) under `pqc-iiot:time-floor:v1:<storage_id>`.
+- A **fleet policy sequence floor** under `pqc-iiot:fleet-policy-seq:v1:<storage_id>`.
+- A **revocation sequence floor** under `pqc-iiot:revocation-seq:v1:<storage_id>`.
+- A **keystore generation** bound to a sealed monotonic counter and a sealed file digest.
+
+Semantics:
+
+- If a sealed floor indicates a higher `seq` than the locally loaded policy/revocation state, the client **fails closed** on security-sensitive operations and requests a control-plane sync.
+- Rollback resistance is only as strong as the provider backend. For software-only providers, these are best-effort signals; for TPM/HSM/TEE-backed providers, they become enforceable invariants.
 
 ## Remote Attestation (Optional, Verifier-Driven)
 
@@ -136,4 +169,3 @@ Verification rule (current simplified policy):
 - `ak_public_key` must match the peer's certified `sig_pk` (software-provider simplification; production should use a distinct AK certified by TPM/TEE).
 
 Only after this does the verifier set `peer.is_trusted = true` and `is_peer_ready(peer) == true`.
-

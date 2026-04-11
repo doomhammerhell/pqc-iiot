@@ -7,6 +7,12 @@ use std::time::{Duration, Instant};
 
 mod common;
 
+fn sealed_blob_path(label: &str) -> std::path::PathBuf {
+    // Mirror `src/security/provider.rs::sealed_blob_path` (kept private).
+    let digest = Sha256::digest(label.as_bytes());
+    std::path::Path::new("pqc-data").join(format!("sealed_{}.bin", hex::encode(digest)))
+}
+
 fn mqtt_msg_digest(sender_id: &str, topic: &str, encrypted_blob: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"pqc-iiot:mqtt-msg:v1");
@@ -564,6 +570,124 @@ fn mqtt_policy_v2_ttl_stale_blocks_new_handshakes() -> Result<(), Box<dyn std::e
     assert!(
         msg.contains("Fleet policy stale"),
         "unexpected error: {msg}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn mqtt_policy_rollback_detected_via_sealed_seq_floor() -> Result<(), Box<dyn std::error::Error>> {
+    let port = 29850;
+    common::start_mqtt_broker(port);
+    let suffix: u32 = rand::random();
+
+    let key_prefix = format!("pqc/policy_rb_keys_{}/", suffix);
+    let alice_id = format!("alice_policy_rb_{}", suffix);
+    let bob_id = format!("bob_policy_rb_{}", suffix);
+
+    // Mesh CA used to sign fleet policy updates.
+    let falcon = Falcon::new();
+    let (ca_pk, ca_sk) = falcon.generate_keypair().expect("ca keygen");
+    let ca_pk_reboot = ca_pk.clone();
+
+    let mut alice = SecureMqttClient::new("localhost", port, &alice_id)?
+        .with_strict_mode(false)
+        .with_key_prefix(&key_prefix)
+        .with_trust_anchor_ca_sig_pk(ca_pk.clone());
+    let mut bob = SecureMqttClient::new("localhost", port, &bob_id)?
+        .with_strict_mode(false)
+        .with_key_prefix(&key_prefix)
+        .with_trust_anchor_ca_sig_pk(ca_pk);
+
+    alice.bootstrap()?;
+    bob.bootstrap()?;
+
+    // Apply a policy update seq=2, capture its sealed blob bytes.
+    let mut policy_2 = pqc_iiot::security::policy::FleetPolicyUpdate {
+        version: pqc_iiot::security::policy::FleetPolicyUpdate::VERSION_V2,
+        seq: 2,
+        issued_at: 1,
+        require_rollback_resistant_storage: false,
+        strict_mode: false,
+        attestation_required: false,
+        require_sessions: true,
+        min_revocation_seq: None,
+        sig_verify_budget: None,
+        decrypt_budget: None,
+        ttl_secs: None,
+        session_rekey_after_msgs: None,
+        session_rekey_after_secs: None,
+        signature: vec![],
+    };
+    policy_2.sign(&ca_sk, "pqc/policy/v1")?;
+    publish_raw(
+        "pqc/policy/v1",
+        port,
+        serde_json::to_vec(&policy_2).expect("policy_2 json"),
+    )?;
+
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(2) {
+        alice.poll(|_, _| {})?;
+        bob.poll(|_, _| {})?;
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let policy_label = format!("pqc-iiot:fleet-policy:v1:{}", alice_id);
+    let policy_path = sealed_blob_path(&policy_label);
+    let sealed_policy_seq2 = std::fs::read(&policy_path).expect("sealed policy seq2 missing");
+
+    // Apply a newer policy update seq=3 (advances the monotonic seq floor), then roll back only the policy blob.
+    let mut policy_3 = pqc_iiot::security::policy::FleetPolicyUpdate {
+        version: pqc_iiot::security::policy::FleetPolicyUpdate::VERSION_V2,
+        seq: 3,
+        issued_at: 2,
+        require_rollback_resistant_storage: false,
+        strict_mode: false,
+        attestation_required: false,
+        require_sessions: true,
+        min_revocation_seq: None,
+        sig_verify_budget: None,
+        decrypt_budget: None,
+        ttl_secs: None,
+        session_rekey_after_msgs: None,
+        session_rekey_after_secs: None,
+        signature: vec![],
+    };
+    policy_3.sign(&ca_sk, "pqc/policy/v1")?;
+    publish_raw(
+        "pqc/policy/v1",
+        port,
+        serde_json::to_vec(&policy_3).expect("policy_3 json"),
+    )?;
+
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(2) {
+        alice.poll(|_, _| {})?;
+        bob.poll(|_, _| {})?;
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    // Attack simulation: roll back only the fleet-policy blob (the monotonic floor is in a separate sealed label).
+    std::fs::write(&policy_path, &sealed_policy_seq2).expect("rollback policy blob write");
+
+    // Simulate a reboot: new client instance loads the sealed seq floor first and must refuse operations.
+    drop(alice);
+    let mut rebooted = SecureMqttClient::new("localhost", port, &alice_id)?
+        .with_strict_mode(false)
+        .with_key_prefix(&key_prefix)
+        .with_trust_anchor_ca_sig_pk(ca_pk_reboot);
+
+    // Connect so `ensure_connected()` passes, but don't `poll()` yet (partition simulation / no catch-up applied).
+    rebooted.bootstrap()?;
+
+    let err = rebooted
+        .initiate_session(&bob_id)
+        .expect_err("expected fail-closed under policy rollback");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("behind sealed floor"),
+        "unexpected error message: {msg}"
     );
 
     Ok(())

@@ -1,4 +1,3 @@
-use crate::security::monotonic::{seal_u64, unseal_u64};
 use crate::security::provider::SecurityProvider;
 use crate::Result;
 use log::{info, warn};
@@ -47,12 +46,12 @@ impl SecureTimeFloor {
     /// and seals it immediately.
     pub fn load(provider: Arc<dyn SecurityProvider>, label: impl Into<String>) -> Result<Self> {
         let label = label.into();
-        let persisted = unseal_u64(&provider, &label)?;
+        let persisted = provider.sealed_monotonic_u64_get(&label)?;
         let floor = persisted.unwrap_or_else(system_unix_seconds);
 
         // If this is the first run (no persisted floor), anchor immediately.
         if persisted.is_none() {
-            seal_u64(&provider, &label, floor)?;
+            provider.seal_data(&label, &floor.to_be_bytes())?;
             info!("secure time floor initialized: {}={}", label, floor);
         }
 
@@ -86,12 +85,14 @@ impl SecureTimeFloor {
         if now > self.floor_unix_s {
             self.floor_unix_s = now;
             if self.last_persist.elapsed() >= self.persist_interval {
-                seal_u64(&self.provider, &self.label, self.floor_unix_s)?;
+                let _ = self
+                    .provider
+                    .sealed_monotonic_u64_advance_to(&self.label, self.floor_unix_s)?;
                 self.last_persist = Instant::now();
             }
         }
 
-        Ok(now)
+        Ok(self.floor_unix_s)
     }
 
     /// Returns the assurance level of the monotonic floor based on the provider backend.
@@ -105,7 +106,9 @@ impl SecureTimeFloor {
 
     /// Force persistence of the current floor.
     pub fn flush(&mut self) -> Result<()> {
-        seal_u64(&self.provider, &self.label, self.floor_unix_s)?;
+        let _ = self
+            .provider
+            .sealed_monotonic_u64_advance_to(&self.label, self.floor_unix_s)?;
         self.last_persist = Instant::now();
         Ok(())
     }
