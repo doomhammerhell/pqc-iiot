@@ -26,6 +26,10 @@ A Rust crate for post-quantum cryptography in Industrial IoT systems.
 
 Designed for **FIPS 140-3** and **IEC 62443** compliance in Critical Infrastructure:
 
+### Security Contract
+
+The invariant-level security contract (threat model assumptions, trust boundaries, fail-closed gates) lives in `SECURITY_INVARIANTS.md`. Treat it as the reference for adversarial correctness and as the place where regressions must be codified as tests.
+
 ### 🛡️ Mathematically Proven Security ("World Class")
 ![Uncrashable](https://img.shields.io/badge/Formal_Verification-Kani-success)
 ![Fuzzing](https://img.shields.io/badge/Fuzzing-LibFuzzer-coverage)

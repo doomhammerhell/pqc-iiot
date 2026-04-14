@@ -2,6 +2,8 @@
 
 This document provides detailed information about the security features and considerations of the PQC-IIoT crate.
 
+For the project’s invariant-level security contract, see `SECURITY_INVARIANTS.md` at the repository root. That document is the reference for “what must always remain true” under adversarial conditions (replay, rollback, partitions, broker compromise).
+
 ## Table of Contents
 
 - [Cryptographic Primitives](#cryptographic-primitives)
@@ -35,15 +37,6 @@ This document provides detailed information about the security features and cons
 - Optimized for embedded systems
 - Constant-time implementation
 
-#### BIKE (Experimental)
-- Code-based KEM
-- Security levels:
-  - Level 1 (experimental)
-  - Level 3 (experimental)
-  - Level 5 (experimental)
-- For research purposes
-- Not recommended for production use
-
 ### Digital Signatures
 
 #### Falcon
@@ -68,18 +61,16 @@ This document provides detailed information about the security features and cons
 ## Protocol Security
 
 ### MQTT Security
-- Post-quantum key exchange
-- Message authentication
-- Replay protection
-- Topic validation
-- Access control
+- Provisioned identity (strict-mode) via signed operational certificates + key announcements bound to peer id/topic.
+- v1 per-message hybrid encryption (Kyber + X25519 → AES-256-GCM) with signature authentication and sliding-window replay protection.
+- v3 forward-secure sessions (authenticated handshake + DH-driven double ratchet) with topic/context binding and bounded out-of-order acceptance.
+- Partition-aware policy + revocation updates (CA-signed, monotonic, retained) with fail-closed gates for high-risk operations.
+- Asymmetric-cost DoS containment: size limits + peer-id sanitation + per-peer/global token-bucket budgets before expensive crypto.
 
 ### CoAP Security
-- Post-quantum key exchange
-- Message authentication
-- Resource protection
-- Path validation
-- Access control
+- Signed payload mode: authenticity-only of application payloads when peer keys are pinned.
+- Custom secure session mode: confidentiality + integrity + anti-replay at the application layer (not OSCORE/DTLS).
+- For interoperability/compliance-critical deployments, OSCORE (with EDHOC) or DTLS is still the “industrial” transport/security boundary.
 
 ## Implementation Security
 

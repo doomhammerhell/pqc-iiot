@@ -16,6 +16,10 @@ use std::collections::HashMap; // Requires std for now. For no-std, use hashbrow
 
 /// Max number of skipped message keys to store (DoS protection)
 const MAX_SKIPPED_KEYS: usize = 50;
+/// Hard cap on messages per ratchet session (overflow + availability boundary).
+///
+/// This prevents `u32` counter rollover from silently breaking replay protection and key evolution.
+const MAX_RATCHET_MESSAGES: u32 = 100_000;
 
 /// KEM-based Double Ratchet Session
 ///
@@ -202,14 +206,10 @@ impl RatchetSession {
     /// Encrypts a message payload using the current Message Key (MK).
     /// Advances the sending chain.
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<RatchetMessage> {
-        // 1. Zero-Knowledge Key Rotation (Self-Healing)
-        // Automatic rotation after 1000 messages to limit breach impact.
-        if self.msg_num_send >= 1000 {
-            let (new_rk, new_ck) = Self::kdf_rk(&self.root_key, &[0xDE, 0xAD, 0xBE, 0xEF])?;
-            self.root_key = new_rk;
-            self.chain_key_send = new_ck;
-            self.msg_num_send = 0;
-            // Note: In production, we'd signal this rotation to the peer (e.g. in the header)
+        if self.msg_num_send >= MAX_RATCHET_MESSAGES {
+            return Err(Error::ProtocolError(
+                "Ratchet session message limit reached; rekey required".into(),
+            ));
         }
 
         // 2. Symmetric Ratchet Step
