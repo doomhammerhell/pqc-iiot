@@ -132,10 +132,62 @@ Fleet security policy is a CA-signed update stream (not broker-trusted configura
 
 Policy is treated as an explicit **security gate**:
 
-- `require_sessions`: disallows v1 per-message hybrid encryption and requires v2 sessions (ratchet).
+- `require_sessions`: disallows v1 per-message hybrid encryption and requires v3 forward-secure sessions (double ratchet).
 - `min_revocation_seq`: fail-closed until emergency revocations are caught up.
 - `ttl_secs`: when secure time is available, new handshakes and encrypted sends fail-closed once the policy becomes stale.
 - `require_rollback_resistant_storage`: fail-closed unless the provider backend is rollback resistant.
+
+## Forward-Secure Sessions (v3: Double Ratchet)
+
+Per-message hybrid encryption (`publish_encrypted`) is simple but does **not** provide post-compromise security (PCS): if a peer identity key is compromised, historical traffic is still safe (PQC), but the attacker can forge traffic until revocation/rotation and the receiver has to verify signatures on every packet.
+
+For critical IIoT deployments, the crate supports forward-secure authenticated sessions:
+
+- Session establishment is authenticated by long-term Falcon identities (no broker trust).
+- Initial shared secret is hybrid: Kyber (PQC) + X25519 (classical) handshake DH.
+- Session traffic uses a DH-driven **double ratchet**:
+  - per-message symmetric ratchet (KDF chain) for forward secrecy
+  - periodic DH ratchet steps for PCS recovery after compromise ends (when bidirectional traffic exists)
+
+**Important:** the DH ratchet step is X25519 (classical). That gives PCS against a classical attacker who is no longer on the endpoint, but it is not “post-quantum PCS”. For PQC refresh, fleets should enforce periodic session re-handshakes (Kyber + X25519) via policy (`session_rekey_after_msgs` / `session_rekey_after_secs`) until a KEM-based in-session ratchet exists.
+
+### Handshake (topics + messages)
+
+Session control uses directed topics:
+
+- Initiator → Responder: `pqc/session/init/<responder_id>` (`SessionInitMessage`)
+- Responder → Initiator: `pqc/session/resp/<initiator_id>` (`SessionResponseMessage`)
+
+Both messages are JSON and include a detached Falcon signature over a canonical payload that binds:
+
+- MQTT topic
+- initiator_id, responder_id
+- session_id (16 bytes)
+- session_seq (monotonic per-peer init sequence)
+- initiator/responder ephemeral X25519 PKs
+- initiator ephemeral Kyber PK + responder Kyber ciphertext
+- timestamp (informational only)
+
+### Encrypted session packet (wire format)
+
+Session traffic is a binary packet carried as MQTT payload:
+
+```
+[sender_id_len:u16][sender_id][v=3][session_id:16][dh_pub:32][msg_num:u32][pn:u32][ct_len:u32][ct]
+```
+
+Where:
+
+- `dh_pub` is the sender’s current ratchet DH public key.
+- `msg_num` is the message number in the current sending chain.
+- `pn` is the previous chain length (Double Ratchet “PN”), used for skipped-key recovery across DH transitions.
+- `ct` is AES-256-GCM ciphertext+tag, with AAD binding `(sender_id, receiver_id, topic, session_id, dh_pub, msg_num, pn)`.
+
+### Operational notes (availability vs security)
+
+- The responder derives its send chain only after processing the first inbound DH ratchet step; the initiator should send first.
+- Long partitions are handled via retained policy/revocation updates and best-effort sync requests (`pqc/policy/sync/v1`, `pqc/revocations/sync/v1`).
+- Session rekey thresholds are driven by fleet policy (`session_rekey_after_msgs`, `session_rekey_after_secs`) and trigger a fresh handshake.
 
 ### Anti-Rollback Floors (Sealed Monotonic Counters)
 

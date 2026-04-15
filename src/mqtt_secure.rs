@@ -272,7 +272,7 @@ pub struct SecureMqttClient {
     storage_id: String,
     sequence_number: u64,
     strict_mode: bool,
-    /// If true, disallow v1 per-message hybrid encryption and require session/ratchet (v2).
+    /// If true, disallow v1 per-message hybrid encryption and require forward-secure sessions (v3, double ratchet).
     require_sessions: bool,
     /// If true, require rollback-resistant sealing/storage in the active fleet policy.
     require_rollback_resistant_storage: bool,
@@ -635,7 +635,7 @@ fn kyber_for_sk_len(len: usize) -> Result<Kyber> {
     }
 }
 
-fn derive_session_chain_keys_v1(kem_ss: &[u8], dh_ss: &[u8]) -> Result<([u8; 32], [u8; 32])> {
+fn derive_session_root_key_v3(kem_ss: &[u8], dh_ss: &[u8]) -> Result<[u8; 32]> {
     if kem_ss.len() != 32 || dh_ss.len() != 32 {
         return Err(Error::CryptoError(format!(
             "Invalid session shared secret lengths: kem_ss={} dh_ss={}",
@@ -643,46 +643,110 @@ fn derive_session_chain_keys_v1(kem_ss: &[u8], dh_ss: &[u8]) -> Result<([u8; 32]
             dh_ss.len()
         )));
     }
+
+    // Session root key material: Kyber (PQC) + X25519 (classical) handshake secrets.
+    // The DH ratchet mixes additional DH outputs into this root over time.
     let mut ikm = [0u8; 64];
     ikm[..32].copy_from_slice(kem_ss);
     ikm[32..].copy_from_slice(dh_ss);
 
     let hk = Hkdf::<Sha256>::new(None, &ikm);
-    let mut ck_initiator = [0u8; 32];
-    let mut ck_responder = [0u8; 32];
-    hk.expand(b"pqc-iiot:mqtt-session:v1:ck-initiator", &mut ck_initiator)
-        .map_err(|_| Error::CryptoError("HKDF expand failed (ck-initiator)".into()))?;
-    hk.expand(b"pqc-iiot:mqtt-session:v1:ck-responder", &mut ck_responder)
-        .map_err(|_| Error::CryptoError("HKDF expand failed (ck-responder)".into()))?;
+    let mut rk0 = [0u8; 32];
+    hk.expand(b"pqc-iiot:mqtt-session:v3:rk0", &mut rk0)
+        .map_err(|_| Error::CryptoError("HKDF expand failed (rk0)".into()))?;
 
     ikm.zeroize();
-
-    Ok((ck_initiator, ck_responder))
+    Ok(rk0)
 }
 
 const MQTT_SESSION_MAX_SKIPPED_KEYS: usize = 50;
 const MQTT_SESSION_MAX_MESSAGES: u32 = 100_000;
+const MQTT_SESSION_SKIPPED_KEYS_TOTAL_LIMIT: usize = 4 * MQTT_SESSION_MAX_SKIPPED_KEYS;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct SkippedKeyId {
+    dh_pub: [u8; 32],
+    msg_num: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionPacketHeaderV3 {
+    dh_pub: [u8; 32],
+    msg_num: u32,
+    prev_chain_len: u32,
+}
+
 struct MqttSession {
     session_id: [u8; 16],
     created_at: Instant,
-    send_chain_key: [u8; 32],
-    recv_chain_key: [u8; 32],
+    // DH-driven double ratchet state (PCS).
+    root_key: [u8; 32],
+    dh_send_sk: X25519StaticSecret,
+    dh_send_pk: [u8; 32],
+    dh_recv_pk: [u8; 32],
+    send_chain_key: Option<[u8; 32]>,
+    recv_chain_key: Option<[u8; 32]>,
+    // Per-chain counters.
     send_msg_num: u32,
     recv_msg_num: u32,
-    skipped_message_keys: std::collections::HashMap<u32, [u8; 32]>,
+    // Previous chain length (PN in the Double Ratchet header).
+    prev_chain_len: u32,
+    // Monotonic send counter for policy rekey thresholds (not a cryptographic nonce/input).
+    sent_messages_total: u32,
+    // Out-of-order / late delivery support across DH chain transitions.
+    skipped_message_keys: std::collections::HashMap<SkippedKeyId, [u8; 32]>,
 }
 
 impl MqttSession {
-    fn new(session_id: [u8; 16], send_chain_key: [u8; 32], recv_chain_key: [u8; 32]) -> Self {
+    fn new_initiator(
+        session_id: [u8; 16],
+        rk0: [u8; 32],
+        peer_handshake_dh: [u8; 32],
+    ) -> Result<Self> {
+        // Initiator starts with a fresh DH sending key to force an early DH-ratchet step on the responder.
+        let dh_send_sk = X25519StaticSecret::random_from_rng(OsRng);
+        let dh_send_pk = X25519PublicKey::from(&dh_send_sk).to_bytes();
+        let (root_key, send_chain_key) = Self::kdf_rk(&rk0, &dh_send_sk, &peer_handshake_dh)?;
+
+        Ok(Self {
+            session_id,
+            created_at: Instant::now(),
+            root_key,
+            dh_send_sk,
+            dh_send_pk,
+            dh_recv_pk: peer_handshake_dh,
+            send_chain_key: Some(send_chain_key),
+            recv_chain_key: None,
+            send_msg_num: 0,
+            recv_msg_num: 0,
+            prev_chain_len: 0,
+            sent_messages_total: 0,
+            skipped_message_keys: std::collections::HashMap::new(),
+        })
+    }
+
+    fn new_responder(
+        session_id: [u8; 16],
+        rk0: [u8; 32],
+        responder_handshake_sk: X25519StaticSecret,
+        responder_handshake_pk: [u8; 32],
+        initiator_handshake_pk: [u8; 32],
+    ) -> Self {
+        // Responder cannot derive a receive chain until it sees the initiator's first ratchet DH key.
+        // It keeps its handshake DH key as DHs, so it can ratchet immediately on the first message.
         Self {
             session_id,
             created_at: Instant::now(),
-            send_chain_key,
-            recv_chain_key,
+            root_key: rk0,
+            dh_send_sk: responder_handshake_sk,
+            dh_send_pk: responder_handshake_pk,
+            dh_recv_pk: initiator_handshake_pk,
+            send_chain_key: None,
+            recv_chain_key: None,
             send_msg_num: 0,
             recv_msg_num: 0,
+            prev_chain_len: 0,
+            sent_messages_total: 0,
             skipped_message_keys: std::collections::HashMap::new(),
         }
     }
@@ -692,22 +756,40 @@ impl MqttSession {
             .map_err(|_| Error::CryptoError("HKDF PRK init failed".into()))?;
         let mut mk = [0u8; 32];
         let mut next_ck = [0u8; 32];
-        hkdf.expand(b"pqc-iiot:mqtt-session:v1:mk", &mut mk)
+        hkdf.expand(b"pqc-iiot:mqtt-session:v3:mk", &mut mk)
             .map_err(|_| Error::CryptoError("HKDF expand failed (mk)".into()))?;
-        hkdf.expand(b"pqc-iiot:mqtt-session:v1:ck", &mut next_ck)
+        hkdf.expand(b"pqc-iiot:mqtt-session:v3:ck", &mut next_ck)
             .map_err(|_| Error::CryptoError("HKDF expand failed (ck)".into()))?;
         Ok((next_ck, mk))
     }
 
-    fn aad_v2(
+    fn kdf_rk(
+        rk: &[u8; 32],
+        dh_send_sk: &X25519StaticSecret,
+        dh_recv_pk: &[u8; 32],
+    ) -> Result<([u8; 32], [u8; 32])> {
+        let peer_pub = X25519PublicKey::from(*dh_recv_pk);
+        let dh_out = dh_send_sk.diffie_hellman(&peer_pub).to_bytes();
+
+        let (_, hkdf) = Hkdf::<Sha256>::extract(Some(rk), dh_out.as_slice());
+        let mut new_rk = [0u8; 32];
+        let mut ck = [0u8; 32];
+        hkdf.expand(b"pqc-iiot:mqtt-session:v3:rk", &mut new_rk)
+            .map_err(|_| Error::CryptoError("HKDF expand failed (rk)".into()))?;
+        hkdf.expand(b"pqc-iiot:mqtt-session:v3:ck", &mut ck)
+            .map_err(|_| Error::CryptoError("HKDF expand failed (ck)".into()))?;
+        Ok((new_rk, ck))
+    }
+
+    fn aad_v3(
         sender_id: &str,
         receiver_id: &str,
         topic: &str,
         session_id: &[u8; 16],
-        msg_num: u32,
+        header: &SessionPacketHeaderV3,
     ) -> Vec<u8> {
         let mut aad = Vec::new();
-        aad.extend_from_slice(b"pqc-iiot:mqtt-msg:v2");
+        aad.extend_from_slice(b"pqc-iiot:mqtt-msg:v3");
         aad.extend_from_slice(&(sender_id.len() as u16).to_be_bytes());
         aad.extend_from_slice(sender_id.as_bytes());
         aad.extend_from_slice(&(receiver_id.len() as u16).to_be_bytes());
@@ -715,38 +797,115 @@ impl MqttSession {
         aad.extend_from_slice(&(topic.len() as u16).to_be_bytes());
         aad.extend_from_slice(topic.as_bytes());
         aad.extend_from_slice(session_id);
-        aad.extend_from_slice(&msg_num.to_be_bytes());
+        aad.extend_from_slice(&header.dh_pub);
+        aad.extend_from_slice(&header.msg_num.to_be_bytes());
+        aad.extend_from_slice(&header.prev_chain_len.to_be_bytes());
         aad
     }
 
-    fn nonce_v2(session_id: &[u8; 16], msg_num: u32) -> [u8; 12] {
+    fn nonce_v3(session_id: &[u8; 16], msg_num: u32) -> [u8; 12] {
         let mut nonce = [0u8; 12];
         nonce[..8].copy_from_slice(&session_id[..8]);
         nonce[8..].copy_from_slice(&msg_num.to_be_bytes());
         nonce
     }
 
-    fn encrypt_v2(
+    fn clear_skipped_keys(&mut self) {
+        for (_, key) in self.skipped_message_keys.iter_mut() {
+            key.zeroize();
+        }
+        self.skipped_message_keys.clear();
+    }
+
+    fn store_skipped_key(&mut self, dh_pub: [u8; 32], msg_num: u32, mk: [u8; 32]) {
+        if self.skipped_message_keys.len() >= MQTT_SESSION_SKIPPED_KEYS_TOTAL_LIMIT {
+            self.clear_skipped_keys();
+        }
+        self.skipped_message_keys
+            .insert(SkippedKeyId { dh_pub, msg_num }, mk);
+    }
+
+    fn skip_message_keys(&mut self, until: u32) -> Result<()> {
+        let Some(mut ck) = self.recv_chain_key else {
+            return Ok(());
+        };
+
+        if until <= self.recv_msg_num {
+            return Ok(());
+        }
+
+        let delta = until - self.recv_msg_num;
+        if delta > MQTT_SESSION_MAX_SKIPPED_KEYS as u32 {
+            return Err(Error::CryptoError(
+                "Skipping too many message keys (limit exceeded)".into(),
+            ));
+        }
+
+        while self.recv_msg_num < until {
+            let (next_ck, mk) = Self::kdf_ck(&ck)?;
+            self.store_skipped_key(self.dh_recv_pk, self.recv_msg_num, mk);
+            ck = next_ck;
+            self.recv_msg_num = self.recv_msg_num.saturating_add(1);
+        }
+
+        self.recv_chain_key = Some(ck);
+        Ok(())
+    }
+
+    fn dh_ratchet(&mut self, new_peer_dh: [u8; 32]) -> Result<()> {
+        // Step 1: update receiving chain.
+        self.dh_recv_pk = new_peer_dh;
+        let (rk1, recv_ck) = Self::kdf_rk(&self.root_key, &self.dh_send_sk, &self.dh_recv_pk)?;
+        self.root_key = rk1;
+        self.recv_chain_key = Some(recv_ck);
+        self.recv_msg_num = 0;
+
+        // Step 2: rotate DHs and derive sending chain.
+        self.prev_chain_len = self.send_msg_num;
+        self.send_msg_num = 0;
+
+        self.dh_send_sk = X25519StaticSecret::random_from_rng(OsRng);
+        self.dh_send_pk = X25519PublicKey::from(&self.dh_send_sk).to_bytes();
+        let (rk2, send_ck) = Self::kdf_rk(&self.root_key, &self.dh_send_sk, &self.dh_recv_pk)?;
+        self.root_key = rk2;
+        self.send_chain_key = Some(send_ck);
+        Ok(())
+    }
+
+    fn encrypt_v3(
         &mut self,
         sender_id: &str,
         receiver_id: &str,
         topic: &str,
         plaintext: &[u8],
-    ) -> Result<(u32, Vec<u8>)> {
-        if self.send_msg_num >= MQTT_SESSION_MAX_MESSAGES {
+    ) -> Result<(SessionPacketHeaderV3, Vec<u8>)> {
+        if self.sent_messages_total >= MQTT_SESSION_MAX_MESSAGES {
             return Err(Error::ProtocolError(format!(
                 "Session {} exhausted message budget (send)",
                 hex::encode(self.session_id)
             )));
         }
 
-        let (next_ck, mk) = Self::kdf_ck(&self.send_chain_key)?;
-        self.send_chain_key = next_ck;
+        let Some(ck) = self.send_chain_key else {
+            return Err(Error::ProtocolError(
+                "Session send chain not ready (await first inbound ratchet)".into(),
+            ));
+        };
+
+        let (next_ck, mk) = Self::kdf_ck(&ck)?;
+        self.send_chain_key = Some(next_ck);
         let msg_num = self.send_msg_num;
         self.send_msg_num = self.send_msg_num.saturating_add(1);
+        self.sent_messages_total = self.sent_messages_total.saturating_add(1);
 
-        let aad = Self::aad_v2(sender_id, receiver_id, topic, &self.session_id, msg_num);
-        let nonce_bytes = Self::nonce_v2(&self.session_id, msg_num);
+        let header = SessionPacketHeaderV3 {
+            dh_pub: self.dh_send_pk,
+            msg_num,
+            prev_chain_len: self.prev_chain_len,
+        };
+
+        let aad = Self::aad_v3(sender_id, receiver_id, topic, &self.session_id, &header);
+        let nonce_bytes = Self::nonce_v3(&self.session_id, msg_num);
 
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&mk));
         let ciphertext = cipher
@@ -759,20 +918,20 @@ impl MqttSession {
             )
             .map_err(|_| Error::CryptoError("AES-GCM encryption failed".into()))?;
 
-        Ok((msg_num, ciphertext))
+        Ok((header, ciphertext))
     }
 
-    fn decrypt_with_mk_v2(
+    fn decrypt_with_mk_v3(
         &self,
         sender_id: &str,
         receiver_id: &str,
         topic: &str,
-        msg_num: u32,
+        header: &SessionPacketHeaderV3,
         mk: &[u8; 32],
         ciphertext: &[u8],
     ) -> Result<Vec<u8>> {
-        let aad = Self::aad_v2(sender_id, receiver_id, topic, &self.session_id, msg_num);
-        let nonce_bytes = Self::nonce_v2(&self.session_id, msg_num);
+        let aad = Self::aad_v3(sender_id, receiver_id, topic, &self.session_id, header);
+        let nonce_bytes = Self::nonce_v3(&self.session_id, header.msg_num);
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(mk));
         cipher
             .decrypt(
@@ -785,59 +944,78 @@ impl MqttSession {
             .map_err(|_| Error::CryptoError("AES-GCM decryption failed".into()))
     }
 
-    fn decrypt_v2(
+    fn decrypt_v3(
         &mut self,
         sender_id: &str,
         receiver_id: &str,
         topic: &str,
-        msg_num: u32,
+        header: SessionPacketHeaderV3,
         ciphertext: &[u8],
     ) -> Result<Vec<u8>> {
-        if let Some(mk) = self.skipped_message_keys.remove(&msg_num) {
-            return self.decrypt_with_mk_v2(
+        if let Some(mk) = self.skipped_message_keys.remove(&SkippedKeyId {
+            dh_pub: header.dh_pub,
+            msg_num: header.msg_num,
+        }) {
+            return self.decrypt_with_mk_v3(
                 sender_id,
                 receiver_id,
                 topic,
-                msg_num,
+                &header,
                 &mk,
                 ciphertext,
             );
         }
 
-        if msg_num < self.recv_msg_num {
+        // DH ratchet step: peer rotated its DH sending key.
+        if header.dh_pub != self.dh_recv_pk {
+            self.skip_message_keys(header.prev_chain_len)?;
+            self.dh_ratchet(header.dh_pub)?;
+        }
+
+        let Some(mut ck) = self.recv_chain_key else {
+            return Err(Error::CryptoError(
+                "Session receive chain not ready (await DH ratchet)".into(),
+            ));
+        };
+
+        if header.msg_num < self.recv_msg_num {
             return Err(Error::CryptoError("Message too old / replay".into()));
         }
 
-        let delta = msg_num - self.recv_msg_num;
+        let delta = header.msg_num - self.recv_msg_num;
         if delta > MQTT_SESSION_MAX_SKIPPED_KEYS as u32 {
             return Err(Error::CryptoError(
                 "Message too far in the future (skip limit exceeded)".into(),
             ));
         }
 
-        while self.recv_msg_num < msg_num {
-            let (next_ck, mk) = Self::kdf_ck(&self.recv_chain_key)?;
-            self.skipped_message_keys.insert(self.recv_msg_num, mk);
-            self.recv_chain_key = next_ck;
+        while self.recv_msg_num < header.msg_num {
+            let (next_ck, mk) = Self::kdf_ck(&ck)?;
+            self.store_skipped_key(self.dh_recv_pk, self.recv_msg_num, mk);
+            ck = next_ck;
             self.recv_msg_num = self.recv_msg_num.saturating_add(1);
         }
 
-        let (next_ck, mk) = Self::kdf_ck(&self.recv_chain_key)?;
-        self.recv_chain_key = next_ck;
+        let (next_ck, mk) = Self::kdf_ck(&ck)?;
+        ck = next_ck;
         self.recv_msg_num = self.recv_msg_num.saturating_add(1);
+        self.recv_chain_key = Some(ck);
 
-        self.decrypt_with_mk_v2(sender_id, receiver_id, topic, msg_num, &mk, ciphertext)
+        self.decrypt_with_mk_v3(sender_id, receiver_id, topic, &header, &mk, ciphertext)
     }
 }
 
 impl Drop for MqttSession {
     fn drop(&mut self) {
-        self.send_chain_key.zeroize();
-        self.recv_chain_key.zeroize();
-        for (_, key) in self.skipped_message_keys.iter_mut() {
-            key.zeroize();
+        self.root_key.zeroize();
+        // x25519_dalek secrets are zeroized on drop.
+        if let Some(ck) = self.send_chain_key.as_mut() {
+            ck.zeroize();
         }
-        self.skipped_message_keys.clear();
+        if let Some(ck) = self.recv_chain_key.as_mut() {
+            ck.zeroize();
+        }
+        self.clear_skipped_keys();
     }
 }
 
@@ -2868,7 +3046,7 @@ impl SecureMqttClient {
         Ok(())
     }
 
-    /// Publish an encrypted message using the forward-secure session ratchet (v2).
+    /// Publish an encrypted message using the forward-secure session ratchet (v3, double ratchet).
     ///
     /// Requires a session to be established via `initiate_session()` and a corresponding response.
     pub fn publish_encrypted_session(
@@ -2887,7 +3065,7 @@ impl SecureMqttClient {
                 let secs = self.session_rekey_after_secs;
                 let mut required = false;
                 if let Some(max_msgs) = msgs {
-                    if peer_sessions.current.send_msg_num >= max_msgs {
+                    if peer_sessions.current.sent_messages_total >= max_msgs {
                         required = true;
                     }
                 }
@@ -2928,10 +3106,10 @@ impl SecureMqttClient {
         })?;
 
         let session = peer_sessions.current_mut();
-        let (msg_num, ciphertext) =
-            session.encrypt_v2(&self.client_id, target_peer_id, topic, payload)?;
+        let (header, ciphertext) =
+            session.encrypt_v3(&self.client_id, target_peer_id, topic, payload)?;
 
-        // Packet: [sender_id_len:u16][sender_id][v=2][session_id:16][msg_num:u32][ct_len:u32][ct]
+        // Packet v3 (double ratchet): [sender_id_len:u16][sender_id][v=3][session_id:16][dh_pub:32][msg_num:u32][pn:u32][ct_len:u32][ct]
         let sender_id_bytes = self.client_id.as_bytes();
         let sender_id_len = sender_id_bytes.len() as u16;
 
@@ -2940,13 +3118,16 @@ impl SecureMqttClient {
         }
         let ct_len = ciphertext.len() as u32;
 
-        let mut packet =
-            Vec::with_capacity(2 + sender_id_bytes.len() + 1 + 16 + 4 + 4 + ciphertext.len());
+        let mut packet = Vec::with_capacity(
+            2 + sender_id_bytes.len() + 1 + 16 + 32 + 4 + 4 + 4 + ciphertext.len(),
+        );
         packet.extend_from_slice(&sender_id_len.to_be_bytes());
         packet.extend_from_slice(sender_id_bytes);
-        packet.push(2);
+        packet.push(3);
         packet.extend_from_slice(&session.session_id);
-        packet.extend_from_slice(&msg_num.to_be_bytes());
+        packet.extend_from_slice(&header.dh_pub);
+        packet.extend_from_slice(&header.msg_num.to_be_bytes());
+        packet.extend_from_slice(&header.prev_chain_len.to_be_bytes());
         packet.extend_from_slice(&ct_len.to_be_bytes());
         packet.extend_from_slice(&ciphertext);
 
@@ -3231,11 +3412,12 @@ impl SecureMqttClient {
                             return Ok(None);
                         }
                         trace!("mqtt rx extracted sender_id={}", sender_id);
-                        // Session/ratchet encrypted packet (v2): [2][session_id:16][msg_num:u32][ct_len:u32][ct]
+                        // Session/ratchet encrypted packet (v3, double ratchet):
+                        // [3][session_id:16][dh_pub:32][msg_num:u32][pn:u32][ct_len:u32][ct]
                         // No per-message signature; authenticity is provided by the established session keys.
-                        if !rest.is_empty() && rest[0] == 2 {
+                        if !rest.is_empty() && rest[0] == 3 {
                             if let Some(plaintext) =
-                                self.try_decrypt_session_packet_v2(&topic, sender_id, rest)?
+                                self.try_decrypt_session_packet_v3(&topic, sender_id, rest)?
                             {
                                 return Ok(Some((topic, plaintext)));
                             }
@@ -3598,19 +3780,24 @@ impl SecureMqttClient {
             }
         };
 
-        let (ck_initiator, ck_responder) = match derive_session_chain_keys_v1(&kem_ss, &dh_ss) {
+        let rk0 = match derive_session_root_key_v3(&kem_ss, &dh_ss) {
             Ok(v) => v,
             Err(e) => {
                 warn!(
-                    "Ignoring session init from {}: session key derivation failed: {}",
+                    "Ignoring session init from {}: session root derivation failed: {}",
                     msg.initiator_id, e
                 );
                 return Ok(());
             }
         };
 
-        // Responder uses ck_responder for sending, ck_initiator for receiving.
-        let session = MqttSession::new(session_id, ck_responder, ck_initiator);
+        let session = MqttSession::new_responder(
+            session_id,
+            rk0,
+            responder_x_sk,
+            responder_x_pk,
+            initiator_x_pk,
+        );
 
         if let Some(existing) = self.sessions.get_mut(&msg.initiator_id) {
             existing.rotate_to(session);
@@ -3859,11 +4046,11 @@ impl SecureMqttClient {
             }
         };
 
-        let (ck_initiator, ck_responder) = match derive_session_chain_keys_v1(&kem_ss, &dh_ss) {
+        let rk0 = match derive_session_root_key_v3(&kem_ss, &dh_ss) {
             Ok(v) => v,
             Err(e) => {
                 warn!(
-                    "Ignoring session response from {}: session key derivation failed: {}",
+                    "Ignoring session response from {}: session root derivation failed: {}",
                     msg.responder_id, e
                 );
                 self.pending_sessions.insert(session_id, pending);
@@ -3871,8 +4058,18 @@ impl SecureMqttClient {
             }
         };
 
-        // Initiator uses ck_initiator for sending, ck_responder for receiving.
-        let session = MqttSession::new(session_id, ck_initiator, ck_responder);
+        // Initiator starts with a fresh DH sending key and immediately derives CKs.
+        let session = match MqttSession::new_initiator(session_id, rk0, responder_x_pk) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "Ignoring session response from {}: ratchet init failed: {}",
+                    msg.responder_id, e
+                );
+                self.pending_sessions.insert(session_id, pending);
+                return Ok(());
+            }
+        };
         if let Some(existing) = self.sessions.get_mut(&msg.responder_id) {
             existing.rotate_to(session);
         } else {
@@ -3884,14 +4081,14 @@ impl SecureMqttClient {
         Ok(())
     }
 
-    fn try_decrypt_session_packet_v2(
+    fn try_decrypt_session_packet_v3(
         &mut self,
         topic: &str,
         sender_id: &str,
         rest: &[u8],
     ) -> Result<Option<Vec<u8>>> {
-        // [2][session_id:16][msg_num:u32][ct_len:u32][ct]
-        const HEADER_LEN: usize = 1 + 16 + 4 + 4;
+        // [3][session_id:16][dh_pub:32][msg_num:u32][pn:u32][ct_len:u32][ct]
+        const HEADER_LEN: usize = 1 + 16 + 32 + 4 + 4 + 4;
         if rest.len() < HEADER_LEN {
             warn!(
                 "Dropping session packet from {}: too short ({} bytes)",
@@ -3903,8 +4100,11 @@ impl SecureMqttClient {
 
         let mut session_id = [0u8; 16];
         session_id.copy_from_slice(&rest[1..17]);
-        let msg_num = u32::from_be_bytes([rest[17], rest[18], rest[19], rest[20]]);
-        let ct_len = u32::from_be_bytes([rest[21], rest[22], rest[23], rest[24]]) as usize;
+        let mut dh_pub = [0u8; 32];
+        dh_pub.copy_from_slice(&rest[17..49]);
+        let msg_num = u32::from_be_bytes([rest[49], rest[50], rest[51], rest[52]]);
+        let pn = u32::from_be_bytes([rest[53], rest[54], rest[55], rest[56]]);
+        let ct_len = u32::from_be_bytes([rest[57], rest[58], rest[59], rest[60]]) as usize;
 
         if rest.len() != HEADER_LEN + ct_len {
             warn!(
@@ -3940,7 +4140,13 @@ impl SecureMqttClient {
             }
         };
 
-        match session.decrypt_v2(sender_id, &self.client_id, topic, msg_num, ciphertext) {
+        let header = SessionPacketHeaderV3 {
+            dh_pub,
+            msg_num,
+            prev_chain_len: pn,
+        };
+
+        match session.decrypt_v3(sender_id, &self.client_id, topic, header, ciphertext) {
             Ok(pt) => Ok(Some(pt)),
             Err(e) => {
                 warn!("Session decrypt failed for {}: {}", sender_id, e);

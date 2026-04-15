@@ -42,7 +42,7 @@ pub struct FleetPolicyUpdate {
     pub strict_mode: bool,
     /// If true, peers are marked trusted only after a verifier-driven attestation roundtrip.
     pub attestation_required: bool,
-    /// If true, disallow v1 per-message KEM/signature encryption and require session/ratchet (v2) before sending.
+    /// If true, disallow v1 per-message KEM/signature encryption and require forward-secure sessions before sending.
     pub require_sessions: bool,
     /// Optional minimum revocation sequence that must be applied before accepting trust transitions.
     ///

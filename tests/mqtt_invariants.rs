@@ -203,6 +203,30 @@ fn mqtt_session_ratchet_establishes_and_binds_topic_and_rejects_replay(
         "Expected no acceptance on topic_bad (topic binding)"
     );
 
+    // Now ensure the responder side can send under the ratchet after receiving the first message.
+    // This is a regression guard for the DH-driven session initialization (PCS): Bob must derive a
+    // sending chain upon the first inbound DH ratchet step.
+    let topic_reply = format!("secure/session_reply_{}", suffix);
+    alice.subscribe(&topic_reply)?;
+
+    bob.publish_encrypted(&topic_reply, b"SESSION_REPLY", &alice_id)?;
+
+    let start = Instant::now();
+    let mut got_reply = 0u32;
+    while start.elapsed() < Duration::from_secs(3) {
+        alice.poll(|t, p| {
+            if t == topic_reply && p == b"SESSION_REPLY" {
+                got_reply += 1;
+            }
+        })?;
+        if got_reply >= 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    assert_eq!(got_reply, 1, "Expected exactly one session reply delivery");
+
     Ok(())
 }
 
