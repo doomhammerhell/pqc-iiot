@@ -272,7 +272,7 @@ pub struct SecureMqttClient {
     storage_id: String,
     sequence_number: u64,
     strict_mode: bool,
-    /// If true, disallow v1 per-message hybrid encryption and require forward-secure sessions (v3, double ratchet).
+    /// If true, disallow v1 per-message hybrid encryption and require forward-secure sessions (v4, hybrid DH+KEM double ratchet).
     require_sessions: bool,
     /// If true, require rollback-resistant sealing/storage in the active fleet policy.
     require_rollback_resistant_storage: bool,
@@ -659,6 +659,11 @@ fn derive_session_root_key_v3(kem_ss: &[u8], dh_ss: &[u8]) -> Result<[u8; 32]> {
     Ok(rk0)
 }
 
+const MQTT_SESSION_PACKET_VERSION_V3: u8 = 3;
+const MQTT_SESSION_PACKET_VERSION_V4: u8 = 4;
+const MQTT_SESSION_KEM_CT_CARRY_MESSAGES: u8 = 3;
+const MQTT_SESSION_MAX_KEM_CIPHERTEXT_BYTES: usize = 2048;
+
 const MQTT_SESSION_MAX_SKIPPED_KEYS: usize = 50;
 const MQTT_SESSION_MAX_MESSAGES: u32 = 100_000;
 const MQTT_SESSION_SKIPPED_KEYS_TOTAL_LIMIT: usize = 4 * MQTT_SESSION_MAX_SKIPPED_KEYS;
@@ -676,9 +681,23 @@ struct SessionPacketHeaderV3 {
     prev_chain_len: u32,
 }
 
+#[derive(Debug, Clone)]
+struct SessionPacketHeaderV4 {
+    dh_pub: [u8; 32],
+    msg_num: u32,
+    prev_chain_len: u32,
+    kem_ciphertext: Vec<u8>,
+}
+
+#[derive(Debug, Default)]
+struct SessionRatchetKemMaterial {
+    kem_ss_in: Option<[u8; 32]>,
+    kem_ss_out: Option<[u8; 32]>,
+    kem_ct_out: Option<Vec<u8>>,
+}
+
 struct MqttSession {
     session_id: [u8; 16],
-    created_at: Instant,
     // DH-driven double ratchet state (PCS).
     root_key: [u8; 32],
     dh_send_sk: X25519StaticSecret,
@@ -693,6 +712,12 @@ struct MqttSession {
     prev_chain_len: u32,
     // Monotonic send counter for policy rekey thresholds (not a cryptographic nonce/input).
     sent_messages_total: u32,
+    // Carry the KEM ciphertext for a few messages after a send-chain rotation.
+    send_kem_ciphertext: Option<Vec<u8>>,
+    send_kem_ciphertext_uses_remaining: u8,
+    // PCS refresh tracking (to avoid refreshing on every message once thresholds are crossed).
+    last_pcs_refresh_total: u32,
+    last_pcs_refresh_at: Instant,
     // Out-of-order / late delivery support across DH chain transitions.
     skipped_message_keys: std::collections::HashMap<SkippedKeyId, [u8; 32]>,
 }
@@ -703,6 +728,7 @@ impl MqttSession {
         rk0: [u8; 32],
         peer_handshake_dh: [u8; 32],
     ) -> Result<Self> {
+        let now = Instant::now();
         // Initiator starts with a fresh DH sending key to force an early DH-ratchet step on the responder.
         let dh_send_sk = X25519StaticSecret::random_from_rng(OsRng);
         let dh_send_pk = X25519PublicKey::from(&dh_send_sk).to_bytes();
@@ -710,7 +736,6 @@ impl MqttSession {
 
         Ok(Self {
             session_id,
-            created_at: Instant::now(),
             root_key,
             dh_send_sk,
             dh_send_pk,
@@ -721,6 +746,10 @@ impl MqttSession {
             recv_msg_num: 0,
             prev_chain_len: 0,
             sent_messages_total: 0,
+            send_kem_ciphertext: None,
+            send_kem_ciphertext_uses_remaining: 0,
+            last_pcs_refresh_total: 0,
+            last_pcs_refresh_at: now,
             skipped_message_keys: std::collections::HashMap::new(),
         })
     }
@@ -732,11 +761,11 @@ impl MqttSession {
         responder_handshake_pk: [u8; 32],
         initiator_handshake_pk: [u8; 32],
     ) -> Self {
+        let now = Instant::now();
         // Responder cannot derive a receive chain until it sees the initiator's first ratchet DH key.
         // It keeps its handshake DH key as DHs, so it can ratchet immediately on the first message.
         Self {
             session_id,
-            created_at: Instant::now(),
             root_key: rk0,
             dh_send_sk: responder_handshake_sk,
             dh_send_pk: responder_handshake_pk,
@@ -747,6 +776,10 @@ impl MqttSession {
             recv_msg_num: 0,
             prev_chain_len: 0,
             sent_messages_total: 0,
+            send_kem_ciphertext: None,
+            send_kem_ciphertext_uses_remaining: 0,
+            last_pcs_refresh_total: 0,
+            last_pcs_refresh_at: now,
             skipped_message_keys: std::collections::HashMap::new(),
         }
     }
@@ -781,6 +814,134 @@ impl MqttSession {
         Ok((new_rk, ck))
     }
 
+    fn kdf_rk_hybrid(
+        rk: &[u8; 32],
+        dh_send_sk: &X25519StaticSecret,
+        dh_recv_pk: &[u8; 32],
+        kem_ss: Option<&[u8; 32]>,
+    ) -> Result<([u8; 32], [u8; 32])> {
+        let Some(kem_ss) = kem_ss else {
+            return Self::kdf_rk(rk, dh_send_sk, dh_recv_pk);
+        };
+
+        let peer_pub = X25519PublicKey::from(*dh_recv_pk);
+        let mut dh_out = dh_send_sk.diffie_hellman(&peer_pub).to_bytes();
+
+        let mut ikm = [0u8; 32 + 32];
+        ikm[..32].copy_from_slice(&dh_out);
+        ikm[32..].copy_from_slice(kem_ss);
+
+        // Domain separation: hybrid ratchet (DH + KEM) uses a distinct label namespace.
+        let (_, hkdf) = Hkdf::<Sha256>::extract(Some(rk), &ikm);
+        let mut new_rk = [0u8; 32];
+        let mut ck = [0u8; 32];
+        hkdf.expand(b"pqc-iiot:mqtt-session:v4:rk", &mut new_rk)
+            .map_err(|_| Error::CryptoError("HKDF expand failed (rk v4)".into()))?;
+        hkdf.expand(b"pqc-iiot:mqtt-session:v4:ck", &mut ck)
+            .map_err(|_| Error::CryptoError("HKDF expand failed (ck v4)".into()))?;
+
+        dh_out.zeroize();
+        ikm.zeroize();
+        Ok((new_rk, ck))
+    }
+
+    fn set_send_kem_ciphertext(&mut self, kem_ciphertext: Vec<u8>) {
+        self.send_kem_ciphertext = Some(kem_ciphertext);
+        self.send_kem_ciphertext_uses_remaining = MQTT_SESSION_KEM_CT_CARRY_MESSAGES;
+    }
+
+    fn kem_ciphertext_for_header(&mut self) -> Vec<u8> {
+        if self.send_kem_ciphertext_uses_remaining == 0 {
+            return Vec::new();
+        }
+        let ct = self.send_kem_ciphertext.clone().unwrap_or_default();
+        self.send_kem_ciphertext_uses_remaining =
+            self.send_kem_ciphertext_uses_remaining.saturating_sub(1);
+        if self.send_kem_ciphertext_uses_remaining == 0 {
+            self.send_kem_ciphertext = None;
+        }
+        ct
+    }
+
+    fn should_pcs_refresh(
+        &self,
+        refresh_after_msgs: Option<u32>,
+        refresh_after_secs: Option<u64>,
+    ) -> bool {
+        let mut required = false;
+        if let Some(max_msgs) = refresh_after_msgs {
+            if self
+                .sent_messages_total
+                .saturating_sub(self.last_pcs_refresh_total)
+                >= max_msgs
+            {
+                required = true;
+            }
+        }
+        if let Some(max_secs) = refresh_after_secs {
+            if self.last_pcs_refresh_at.elapsed() >= Duration::from_secs(max_secs) {
+                required = true;
+            }
+        }
+        required
+    }
+
+    fn mark_pcs_refreshed(&mut self) {
+        self.last_pcs_refresh_total = self.sent_messages_total;
+        self.last_pcs_refresh_at = Instant::now();
+    }
+
+    fn rotate_send_chain_with_kem(
+        &mut self,
+        kem_ss_out: Option<[u8; 32]>,
+        kem_ct_out: Option<Vec<u8>>,
+    ) -> Result<()> {
+        self.prev_chain_len = self.send_msg_num;
+        self.send_msg_num = 0;
+
+        self.dh_send_sk = X25519StaticSecret::random_from_rng(OsRng);
+        self.dh_send_pk = X25519PublicKey::from(&self.dh_send_sk).to_bytes();
+        let (rk2, send_ck) = Self::kdf_rk_hybrid(
+            &self.root_key,
+            &self.dh_send_sk,
+            &self.dh_recv_pk,
+            kem_ss_out.as_ref(),
+        )?;
+        self.root_key = rk2;
+        self.send_chain_key = Some(send_ck);
+        if let Some(ct) = kem_ct_out {
+            self.set_send_kem_ciphertext(ct);
+        } else {
+            self.send_kem_ciphertext = None;
+            self.send_kem_ciphertext_uses_remaining = 0;
+        }
+        Ok(())
+    }
+
+    fn dh_ratchet_with_kem(
+        &mut self,
+        new_peer_dh: [u8; 32],
+        kem_ss_in: Option<[u8; 32]>,
+        kem_ss_out: Option<[u8; 32]>,
+        kem_ct_out: Option<Vec<u8>>,
+    ) -> Result<()> {
+        // Step 1: update receiving chain.
+        self.dh_recv_pk = new_peer_dh;
+        let (rk1, recv_ck) = Self::kdf_rk_hybrid(
+            &self.root_key,
+            &self.dh_send_sk,
+            &self.dh_recv_pk,
+            kem_ss_in.as_ref(),
+        )?;
+        self.root_key = rk1;
+        self.recv_chain_key = Some(recv_ck);
+        self.recv_msg_num = 0;
+
+        // Step 2: rotate DHs and derive sending chain.
+        self.rotate_send_chain_with_kem(kem_ss_out, kem_ct_out)?;
+        Ok(())
+    }
+
     fn aad_v3(
         sender_id: &str,
         receiver_id: &str,
@@ -800,6 +961,30 @@ impl MqttSession {
         aad.extend_from_slice(&header.dh_pub);
         aad.extend_from_slice(&header.msg_num.to_be_bytes());
         aad.extend_from_slice(&header.prev_chain_len.to_be_bytes());
+        aad
+    }
+
+    fn aad_v4(
+        sender_id: &str,
+        receiver_id: &str,
+        topic: &str,
+        session_id: &[u8; 16],
+        header: &SessionPacketHeaderV4,
+    ) -> Vec<u8> {
+        let mut aad = Vec::new();
+        aad.extend_from_slice(b"pqc-iiot:mqtt-msg:v4");
+        aad.extend_from_slice(&(sender_id.len() as u16).to_be_bytes());
+        aad.extend_from_slice(sender_id.as_bytes());
+        aad.extend_from_slice(&(receiver_id.len() as u16).to_be_bytes());
+        aad.extend_from_slice(receiver_id.as_bytes());
+        aad.extend_from_slice(&(topic.len() as u16).to_be_bytes());
+        aad.extend_from_slice(topic.as_bytes());
+        aad.extend_from_slice(session_id);
+        aad.extend_from_slice(&header.dh_pub);
+        aad.extend_from_slice(&header.msg_num.to_be_bytes());
+        aad.extend_from_slice(&header.prev_chain_len.to_be_bytes());
+        aad.extend_from_slice(&(header.kem_ciphertext.len() as u16).to_be_bytes());
+        aad.extend_from_slice(&header.kem_ciphertext);
         aad
     }
 
@@ -870,55 +1055,6 @@ impl MqttSession {
         self.root_key = rk2;
         self.send_chain_key = Some(send_ck);
         Ok(())
-    }
-
-    fn encrypt_v3(
-        &mut self,
-        sender_id: &str,
-        receiver_id: &str,
-        topic: &str,
-        plaintext: &[u8],
-    ) -> Result<(SessionPacketHeaderV3, Vec<u8>)> {
-        if self.sent_messages_total >= MQTT_SESSION_MAX_MESSAGES {
-            return Err(Error::ProtocolError(format!(
-                "Session {} exhausted message budget (send)",
-                hex::encode(self.session_id)
-            )));
-        }
-
-        let Some(ck) = self.send_chain_key else {
-            return Err(Error::ProtocolError(
-                "Session send chain not ready (await first inbound ratchet)".into(),
-            ));
-        };
-
-        let (next_ck, mk) = Self::kdf_ck(&ck)?;
-        self.send_chain_key = Some(next_ck);
-        let msg_num = self.send_msg_num;
-        self.send_msg_num = self.send_msg_num.saturating_add(1);
-        self.sent_messages_total = self.sent_messages_total.saturating_add(1);
-
-        let header = SessionPacketHeaderV3 {
-            dh_pub: self.dh_send_pk,
-            msg_num,
-            prev_chain_len: self.prev_chain_len,
-        };
-
-        let aad = Self::aad_v3(sender_id, receiver_id, topic, &self.session_id, &header);
-        let nonce_bytes = Self::nonce_v3(&self.session_id, msg_num);
-
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&mk));
-        let ciphertext = cipher
-            .encrypt(
-                Nonce::from_slice(&nonce_bytes),
-                Payload {
-                    msg: plaintext,
-                    aad: &aad,
-                },
-            )
-            .map_err(|_| Error::CryptoError("AES-GCM encryption failed".into()))?;
-
-        Ok((header, ciphertext))
     }
 
     fn decrypt_with_mk_v3(
@@ -1002,6 +1138,161 @@ impl MqttSession {
         self.recv_chain_key = Some(ck);
 
         self.decrypt_with_mk_v3(sender_id, receiver_id, topic, &header, &mk, ciphertext)
+    }
+
+    fn encrypt_v4(
+        &mut self,
+        sender_id: &str,
+        receiver_id: &str,
+        topic: &str,
+        plaintext: &[u8],
+    ) -> Result<(SessionPacketHeaderV4, Vec<u8>)> {
+        if self.sent_messages_total >= MQTT_SESSION_MAX_MESSAGES {
+            return Err(Error::ProtocolError(format!(
+                "Session {} exhausted message budget (send)",
+                hex::encode(self.session_id)
+            )));
+        }
+
+        let Some(ck) = self.send_chain_key else {
+            return Err(Error::ProtocolError(
+                "Session send chain not ready (await first inbound ratchet)".into(),
+            ));
+        };
+
+        let kem_ciphertext = self.kem_ciphertext_for_header();
+        if kem_ciphertext.len() > MQTT_SESSION_MAX_KEM_CIPHERTEXT_BYTES {
+            return Err(Error::ProtocolError(format!(
+                "Session KEM ciphertext too large: {} bytes",
+                kem_ciphertext.len()
+            )));
+        }
+
+        let (next_ck, mk) = Self::kdf_ck(&ck)?;
+        self.send_chain_key = Some(next_ck);
+        let msg_num = self.send_msg_num;
+        self.send_msg_num = self.send_msg_num.saturating_add(1);
+        self.sent_messages_total = self.sent_messages_total.saturating_add(1);
+
+        let header = SessionPacketHeaderV4 {
+            dh_pub: self.dh_send_pk,
+            msg_num,
+            prev_chain_len: self.prev_chain_len,
+            kem_ciphertext,
+        };
+
+        let aad = Self::aad_v4(sender_id, receiver_id, topic, &self.session_id, &header);
+        let nonce_bytes = Self::nonce_v3(&self.session_id, msg_num);
+
+        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&mk));
+        let ciphertext = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce_bytes),
+                Payload {
+                    msg: plaintext,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| Error::CryptoError("AES-GCM encryption failed".into()))?;
+
+        Ok((header, ciphertext))
+    }
+
+    fn decrypt_with_mk_v4(
+        &self,
+        sender_id: &str,
+        receiver_id: &str,
+        topic: &str,
+        header: &SessionPacketHeaderV4,
+        mk: &[u8; 32],
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>> {
+        let aad = Self::aad_v4(sender_id, receiver_id, topic, &self.session_id, header);
+        let nonce_bytes = Self::nonce_v3(&self.session_id, header.msg_num);
+        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(mk));
+        cipher
+            .decrypt(
+                Nonce::from_slice(&nonce_bytes),
+                Payload {
+                    msg: ciphertext,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| Error::CryptoError("AES-GCM decryption failed".into()))
+    }
+
+    fn decrypt_v4(
+        &mut self,
+        sender_id: &str,
+        receiver_id: &str,
+        topic: &str,
+        header: SessionPacketHeaderV4,
+        ciphertext: &[u8],
+        ratchet: SessionRatchetKemMaterial,
+    ) -> Result<Vec<u8>> {
+        let SessionRatchetKemMaterial {
+            kem_ss_in,
+            kem_ss_out,
+            kem_ct_out,
+        } = ratchet;
+        if let Some(mk) = self.skipped_message_keys.remove(&SkippedKeyId {
+            dh_pub: header.dh_pub,
+            msg_num: header.msg_num,
+        }) {
+            return self.decrypt_with_mk_v4(
+                sender_id,
+                receiver_id,
+                topic,
+                &header,
+                &mk,
+                ciphertext,
+            );
+        }
+
+        // DH ratchet step: peer rotated its DH sending key.
+        if header.dh_pub != self.dh_recv_pk {
+            self.skip_message_keys(header.prev_chain_len)?;
+
+            // Downgrade resistance: after the session has a receiving chain, require KEM on DH steps.
+            if self.recv_chain_key.is_some() && kem_ss_in.is_none() {
+                return Err(Error::ProtocolError(
+                    "Missing KEM secret on hybrid DH ratchet step".into(),
+                ));
+            }
+
+            self.dh_ratchet_with_kem(header.dh_pub, kem_ss_in, kem_ss_out, kem_ct_out)?;
+        }
+
+        let Some(mut ck) = self.recv_chain_key else {
+            return Err(Error::CryptoError(
+                "Session receive chain not ready (await DH ratchet)".into(),
+            ));
+        };
+
+        if header.msg_num < self.recv_msg_num {
+            return Err(Error::CryptoError("Message too old / replay".into()));
+        }
+
+        let delta = header.msg_num - self.recv_msg_num;
+        if delta > MQTT_SESSION_MAX_SKIPPED_KEYS as u32 {
+            return Err(Error::CryptoError(
+                "Message too far in the future (skip limit exceeded)".into(),
+            ));
+        }
+
+        while self.recv_msg_num < header.msg_num {
+            let (next_ck, mk) = Self::kdf_ck(&ck)?;
+            self.store_skipped_key(self.dh_recv_pk, self.recv_msg_num, mk);
+            ck = next_ck;
+            self.recv_msg_num = self.recv_msg_num.saturating_add(1);
+        }
+
+        let (next_ck, mk) = Self::kdf_ck(&ck)?;
+        ck = next_ck;
+        self.recv_msg_num = self.recv_msg_num.saturating_add(1);
+        self.recv_chain_key = Some(ck);
+
+        self.decrypt_with_mk_v4(sender_id, receiver_id, topic, &header, &mk, ciphertext)
     }
 }
 
@@ -3046,7 +3337,7 @@ impl SecureMqttClient {
         Ok(())
     }
 
-    /// Publish an encrypted message using the forward-secure session ratchet (v3, double ratchet).
+    /// Publish an encrypted message using the forward-secure session ratchet (v4, hybrid DH+KEM double ratchet).
     ///
     /// Requires a session to be established via `initiate_session()` and a corresponding response.
     pub fn publish_encrypted_session(
@@ -3058,46 +3349,6 @@ impl SecureMqttClient {
         self.ensure_connected()?;
         self.ensure_fleet_policy_fresh("publish_encrypted_session")?;
 
-        // Enforce periodic re-handshake thresholds from fleet policy (PCS building block).
-        let needs_rekey = match self.sessions.get(target_peer_id) {
-            Some(peer_sessions) => {
-                let msgs = self.session_rekey_after_msgs;
-                let secs = self.session_rekey_after_secs;
-                let mut required = false;
-                if let Some(max_msgs) = msgs {
-                    if peer_sessions.current.sent_messages_total >= max_msgs {
-                        required = true;
-                    }
-                }
-                if let Some(max_secs) = secs {
-                    if peer_sessions.current.created_at.elapsed() >= Duration::from_secs(max_secs) {
-                        required = true;
-                    }
-                }
-                required
-            }
-            None => {
-                return Err(Error::ClientError(format!(
-                    "No active session for {}; call initiate_session() and wait for response",
-                    target_peer_id
-                )))
-            }
-        };
-        if needs_rekey {
-            if !self
-                .pending_sessions
-                .values()
-                .any(|p| p.peer_id == target_peer_id)
-            {
-                // Best-effort: initiate a fresh session; caller retries once established.
-                self.initiate_session(target_peer_id)?;
-            }
-            return Err(Error::ClientError(format!(
-                "Session requires rekey; initiated session handshake for {}; retry later",
-                target_peer_id
-            )));
-        }
-
         let peer_sessions = self.sessions.get_mut(target_peer_id).ok_or_else(|| {
             Error::ClientError(format!(
                 "No active session for {}; call initiate_session() and wait for response",
@@ -3106,10 +3357,55 @@ impl SecureMqttClient {
         })?;
 
         let session = peer_sessions.current_mut();
-        let (header, ciphertext) =
-            session.encrypt_v3(&self.client_id, target_peer_id, topic, payload)?;
+        // In-session post-compromise recovery (PQC PCS):
+        // periodically rotate the sender DH key and inject a Kyber KEM secret into the root KDF.
+        //
+        // This avoids full session re-handshakes in the common case, and provides PCS even for
+        // unidirectional traffic (telemetry) by allowing the sender to proactively ratchet.
+        if session.should_pcs_refresh(self.session_rekey_after_msgs, self.session_rekey_after_secs)
+        {
+            let peer_keys = self.keystore.get(target_peer_id).ok_or_else(|| {
+                Error::ClientError(format!(
+                    "Cannot refresh session: missing keystore entry for {}",
+                    target_peer_id
+                ))
+            })?;
+            if !peer_keys.is_trusted || peer_keys.kem_pk.is_empty() {
+                return Err(Error::ClientError(format!(
+                    "Cannot refresh session: peer not trusted/ready: {}",
+                    target_peer_id
+                )));
+            }
 
-        // Packet v3 (double ratchet): [sender_id_len:u16][sender_id][v=3][session_id:16][dh_pub:32][msg_num:u32][pn:u32][ct_len:u32][ct]
+            let kyber = kyber_for_pk_len(peer_keys.kem_pk.len())?;
+            let (kem_ct, mut kem_ss) = kyber.encapsulate(&peer_keys.kem_pk)?;
+            if kem_ct.len() > MQTT_SESSION_MAX_KEM_CIPHERTEXT_BYTES {
+                kem_ss.zeroize();
+                return Err(Error::ProtocolError(format!(
+                    "Session KEM ciphertext too large: {} bytes",
+                    kem_ct.len()
+                )));
+            }
+            if kem_ss.len() != 32 {
+                kem_ss.zeroize();
+                return Err(Error::CryptoError(format!(
+                    "Unexpected Kyber shared secret length: {}",
+                    kem_ss.len()
+                )));
+            }
+            let mut kem_ss_arr = [0u8; 32];
+            kem_ss_arr.copy_from_slice(&kem_ss);
+            kem_ss.zeroize();
+
+            session.rotate_send_chain_with_kem(Some(kem_ss_arr), Some(kem_ct))?;
+            session.mark_pcs_refreshed();
+        }
+
+        let (header, ciphertext) =
+            session.encrypt_v4(&self.client_id, target_peer_id, topic, payload)?;
+
+        // Packet v4 (double ratchet + KEM refresh):
+        // [sender_id_len:u16][sender_id][v=4][session_id:16][dh_pub:32][msg_num:u32][pn:u32][kem_ct_len:u16][kem_ct][ct_len:u32][ct]
         let sender_id_bytes = self.client_id.as_bytes();
         let sender_id_len = sender_id_bytes.len() as u16;
 
@@ -3118,16 +3414,32 @@ impl SecureMqttClient {
         }
         let ct_len = ciphertext.len() as u32;
 
+        if header.kem_ciphertext.len() > u16::MAX as usize {
+            return Err(Error::InvalidInput("KEM ciphertext too large".into()));
+        }
+        let kem_ct_len = header.kem_ciphertext.len() as u16;
+
         let mut packet = Vec::with_capacity(
-            2 + sender_id_bytes.len() + 1 + 16 + 32 + 4 + 4 + 4 + ciphertext.len(),
+            2 + sender_id_bytes.len()
+                + 1
+                + 16
+                + 32
+                + 4
+                + 4
+                + 2
+                + header.kem_ciphertext.len()
+                + 4
+                + ciphertext.len(),
         );
         packet.extend_from_slice(&sender_id_len.to_be_bytes());
         packet.extend_from_slice(sender_id_bytes);
-        packet.push(3);
+        packet.push(MQTT_SESSION_PACKET_VERSION_V4);
         packet.extend_from_slice(&session.session_id);
         packet.extend_from_slice(&header.dh_pub);
         packet.extend_from_slice(&header.msg_num.to_be_bytes());
         packet.extend_from_slice(&header.prev_chain_len.to_be_bytes());
+        packet.extend_from_slice(&kem_ct_len.to_be_bytes());
+        packet.extend_from_slice(&header.kem_ciphertext);
         packet.extend_from_slice(&ct_len.to_be_bytes());
         packet.extend_from_slice(&ciphertext);
 
@@ -3412,10 +3724,21 @@ impl SecureMqttClient {
                             return Ok(None);
                         }
                         trace!("mqtt rx extracted sender_id={}", sender_id);
-                        // Session/ratchet encrypted packet (v3, double ratchet):
+                        // Session/ratchet encrypted packet (v4, hybrid double ratchet):
+                        // [4][session_id:16][dh_pub:32][msg_num:u32][pn:u32][kem_ct_len:u16][kem_ct][ct_len:u32][ct]
+                        //
+                        // Legacy (v3, classical double ratchet):
                         // [3][session_id:16][dh_pub:32][msg_num:u32][pn:u32][ct_len:u32][ct]
                         // No per-message signature; authenticity is provided by the established session keys.
-                        if !rest.is_empty() && rest[0] == 3 {
+                        if !rest.is_empty() && rest[0] == MQTT_SESSION_PACKET_VERSION_V4 {
+                            if let Some(plaintext) =
+                                self.try_decrypt_session_packet_v4(&topic, sender_id, rest)?
+                            {
+                                return Ok(Some((topic, plaintext)));
+                            }
+                            return Ok(None);
+                        }
+                        if !rest.is_empty() && rest[0] == MQTT_SESSION_PACKET_VERSION_V3 {
                             if let Some(plaintext) =
                                 self.try_decrypt_session_packet_v3(&topic, sender_id, rest)?
                             {
@@ -4150,6 +4473,244 @@ impl SecureMqttClient {
             Ok(pt) => Ok(Some(pt)),
             Err(e) => {
                 warn!("Session decrypt failed for {}: {}", sender_id, e);
+                self.metrics.inc_decryption_failure();
+                Ok(None)
+            }
+        }
+    }
+
+    fn try_decrypt_session_packet_v4(
+        &mut self,
+        topic: &str,
+        sender_id: &str,
+        rest: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        // [4][session_id:16][dh_pub:32][msg_num:u32][pn:u32][kem_ct_len:u16][kem_ct][ct_len:u32][ct]
+        const FIXED_PREFIX_LEN: usize = 1 + 16 + 32 + 4 + 4 + 2;
+        if rest.len() < FIXED_PREFIX_LEN + 4 {
+            warn!(
+                "Dropping session packet v4 from {}: too short ({} bytes)",
+                sender_id,
+                rest.len()
+            );
+            return Ok(None);
+        }
+
+        let mut session_id = [0u8; 16];
+        session_id.copy_from_slice(&rest[1..17]);
+        let mut dh_pub = [0u8; 32];
+        dh_pub.copy_from_slice(&rest[17..49]);
+        let msg_num = u32::from_be_bytes([rest[49], rest[50], rest[51], rest[52]]);
+        let pn = u32::from_be_bytes([rest[53], rest[54], rest[55], rest[56]]);
+        let kem_ct_len = u16::from_be_bytes([rest[57], rest[58]]) as usize;
+
+        if kem_ct_len > MQTT_SESSION_MAX_KEM_CIPHERTEXT_BYTES {
+            warn!(
+                "Dropping session packet v4 from {}: kem_ct_len too large ({})",
+                sender_id, kem_ct_len
+            );
+            return Ok(None);
+        }
+
+        let kem_ct_start: usize = 59;
+        let ct_len_start = kem_ct_start + kem_ct_len;
+        if rest.len() < ct_len_start + 4 {
+            warn!(
+                "Dropping session packet v4 from {}: truncated header",
+                sender_id
+            );
+            return Ok(None);
+        }
+
+        let ct_len = u32::from_be_bytes([
+            rest[ct_len_start],
+            rest[ct_len_start + 1],
+            rest[ct_len_start + 2],
+            rest[ct_len_start + 3],
+        ]) as usize;
+        let header_len = ct_len_start + 4;
+        if rest.len() != header_len + ct_len {
+            warn!(
+                "Dropping session packet v4 from {}: length mismatch kem_ct_len={} ct_len={} total={}",
+                sender_id,
+                kem_ct_len,
+                ct_len,
+                rest.len()
+            );
+            return Ok(None);
+        }
+
+        let kem_ct = &rest[kem_ct_start..kem_ct_start + kem_ct_len];
+        let ciphertext = &rest[header_len..];
+
+        let kem_ciphertext_vec = if kem_ct.is_empty() {
+            Vec::new()
+        } else {
+            kem_ct.to_vec()
+        };
+        let header = SessionPacketHeaderV4 {
+            dh_pub,
+            msg_num,
+            prev_chain_len: pn,
+            kem_ciphertext: kem_ciphertext_vec,
+        };
+
+        let needs_ratchet = match self.sessions.get(sender_id) {
+            Some(peer_sessions) => {
+                if peer_sessions.current.session_id == session_id {
+                    dh_pub != peer_sessions.current.dh_recv_pk
+                } else if let Some((prev, _)) = &peer_sessions.previous {
+                    if prev.session_id == session_id {
+                        dh_pub != prev.dh_recv_pk
+                    } else {
+                        warn!(
+                            "Dropping session packet v4 from {}: session_id mismatch",
+                            sender_id
+                        );
+                        return Ok(None);
+                    }
+                } else {
+                    warn!(
+                        "Dropping session packet v4 from {}: session_id mismatch",
+                        sender_id
+                    );
+                    return Ok(None);
+                }
+            }
+            None => {
+                warn!(
+                    "Dropping session packet v4 from {}: no active session",
+                    sender_id
+                );
+                return Ok(None);
+            }
+        };
+
+        let mut ratchet = SessionRatchetKemMaterial::default();
+
+        if needs_ratchet {
+            // Asymmetric-cost DoS: KEM decapsulation + encapsulation on ratchet steps is expensive.
+            if !self.allow_decrypt(sender_id) {
+                warn!(
+                    "Dropping session packet v4 from {}: rate limited (decrypt budget)",
+                    sender_id
+                );
+                self.metrics.inc_rate_limit_drop();
+                return Ok(None);
+            }
+
+            if !kem_ct.is_empty() {
+                match self.provider.kem_decapsulate(kem_ct) {
+                    Ok(ss) => ratchet.kem_ss_in = Some(ss),
+                    Err(e) => {
+                        warn!(
+                            "Dropping session packet v4 from {}: KEM decapsulation failed: {}",
+                            sender_id, e
+                        );
+                        self.metrics.inc_decryption_failure();
+                        return Ok(None);
+                    }
+                }
+            }
+
+            // Prepare an outbound KEM ciphertext for our own send-chain rotation.
+            let peer_keys = match self.keystore.get(sender_id) {
+                Some(k) => k,
+                None => {
+                    warn!(
+                        "Dropping session packet v4 from {}: missing keystore entry",
+                        sender_id
+                    );
+                    return Ok(None);
+                }
+            };
+            if peer_keys.kem_pk.is_empty() {
+                warn!(
+                    "Dropping session packet v4 from {}: peer KEM pk missing",
+                    sender_id
+                );
+                return Ok(None);
+            }
+            let kyber = match kyber_for_pk_len(peer_keys.kem_pk.len()) {
+                Ok(k) => k,
+                Err(e) => {
+                    warn!(
+                        "Dropping session packet v4 from {}: invalid peer Kyber pk: {}",
+                        sender_id, e
+                    );
+                    return Ok(None);
+                }
+            };
+            let (ct, mut ss_vec) = match kyber.encapsulate(&peer_keys.kem_pk) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(
+                        "Dropping session packet v4 from {}: KEM encapsulation failed: {}",
+                        sender_id, e
+                    );
+                    self.metrics.inc_decryption_failure();
+                    return Ok(None);
+                }
+            };
+            if ct.len() > MQTT_SESSION_MAX_KEM_CIPHERTEXT_BYTES {
+                ss_vec.zeroize();
+                warn!(
+                    "Dropping session packet v4 from {}: outbound kem_ct too large ({})",
+                    sender_id,
+                    ct.len()
+                );
+                return Ok(None);
+            }
+            if ss_vec.len() != 32 {
+                ss_vec.zeroize();
+                warn!(
+                    "Dropping session packet v4 from {}: unexpected KEM ss len {}",
+                    sender_id,
+                    ss_vec.len()
+                );
+                return Ok(None);
+            }
+            let mut ss_arr = [0u8; 32];
+            ss_arr.copy_from_slice(&ss_vec);
+            ss_vec.zeroize();
+
+            ratchet.kem_ss_out = Some(ss_arr);
+            ratchet.kem_ct_out = Some(ct);
+        }
+
+        let peer_sessions = match self.sessions.get_mut(sender_id) {
+            Some(s) => s,
+            None => {
+                warn!(
+                    "Dropping session packet v4 from {}: no active session",
+                    sender_id
+                );
+                return Ok(None);
+            }
+        };
+
+        let session = match peer_sessions.get_mut_by_session_id(&session_id) {
+            Some(s) => s,
+            None => {
+                warn!(
+                    "Dropping session packet v4 from {}: session_id mismatch",
+                    sender_id
+                );
+                return Ok(None);
+            }
+        };
+
+        match session.decrypt_v4(
+            sender_id,
+            &self.client_id,
+            topic,
+            header,
+            ciphertext,
+            ratchet,
+        ) {
+            Ok(pt) => Ok(Some(pt)),
+            Err(e) => {
+                warn!("Session decrypt v4 failed for {}: {}", sender_id, e);
                 self.metrics.inc_decryption_failure();
                 Ok(None)
             }

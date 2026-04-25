@@ -63,14 +63,15 @@ For the project’s invariant-level security contract, see `SECURITY_INVARIANTS.
 ### MQTT Security
 - Provisioned identity (strict-mode) via signed operational certificates + key announcements bound to peer id/topic.
 - v1 per-message hybrid encryption (Kyber + X25519 → AES-256-GCM) with signature authentication and sliding-window replay protection.
-- v3 forward-secure sessions (authenticated handshake + DH-driven double ratchet) with topic/context binding and bounded out-of-order acceptance.
+- v4 forward-secure sessions (authenticated handshake + hybrid DH+KEM double ratchet) with topic/context binding, bounded out-of-order acceptance, and in-session PQC refresh.
 - Partition-aware policy + revocation updates (CA-signed, monotonic, retained) with fail-closed gates for high-risk operations.
 - Asymmetric-cost DoS containment: size limits + peer-id sanitation + per-peer/global token-bucket budgets before expensive crypto.
 
 ### CoAP Security
 - Signed payload mode: authenticity-only of application payloads when peer keys are pinned.
 - Custom secure session mode: confidentiality + integrity + anti-replay at the application layer (not OSCORE/DTLS).
-- For interoperability/compliance-critical deployments, OSCORE (with EDHOC) or DTLS is still the “industrial” transport/security boundary.
+- OSCORE mode (RFC 8613): standards-aligned message protection (feature `coap-oscore`).
+- For interoperability/compliance-critical deployments, OSCORE with a standard AKE (e.g., EDHOC) or DTLS is the “industrial” transport/security boundary.
 
 ## Implementation Security
 

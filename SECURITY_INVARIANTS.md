@@ -184,13 +184,19 @@ This prevents broker-mediated session splicing and downgrade/replay of old sessi
 In this codebase, the design target is:
 
 - **DH-ratchet** inside sessions (PCS against classical compromise).
-- **KEM refresh** via session re-handshake policy (PQC refresh, and PCS reset when bidirectional traffic is absent).
+- **Hybrid DH+KEM root updates** (v4) on DH transitions and policy-driven sender refresh to provide an in-session PQC refresh signal and downgrade resistance.
 
 Regression coverage should include:
 
 - topic binding (ciphertext replayed on another topic must fail)
 - replay rejection (duplicate packet must fail)
 - bounded out-of-order acceptance within a skip window
+- downgrade rejection: DH transition without the expected KEM material after establishment must fail
+
+Regression coverage:
+
+- `tests/mqtt_invariants.rs::mqtt_session_ratchet_establishes_and_binds_topic_and_rejects_replay`
+- `tests/mqtt_invariants.rs::mqtt_session_v4_rejects_dh_ratchet_without_kem_after_established`
 
 ---
 
@@ -198,7 +204,7 @@ Regression coverage should include:
 
 **Invariant:** Signed payloads are authenticity-only and MUST NOT be described as transport security.
 
-**Invariant:** Custom session encryption is not OSCORE/DTLS and MUST be marked experimental.
+**Invariant:** OSCORE mode is the standards-aligned CoAP security context. Custom session encryption is not OSCORE/DTLS and MUST be marked experimental (not the compliance baseline).
 
 For IIoT-critical deployments, the “industrial path” is:
 
@@ -221,4 +227,3 @@ The current model is a functional placeholder:
 Any production-grade claim requires:
 
 - EK/AK separation, manufacturer chain, PCR policy, event log, and verifier policy definition.
-

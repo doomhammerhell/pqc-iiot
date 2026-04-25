@@ -1,3 +1,4 @@
+use crate::crypto::traits::PqcKEM;
 use crate::{Error, Result};
 use aes_gcm::{
     aead::{Aead, KeyInit},
@@ -11,6 +12,7 @@ use pqcrypto_traits::sign::{DetachedSignature, SecretKey as _};
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use zeroize::Zeroize;
 
 fn ensure_pqc_data_dir() -> Result<()> {
     let dir = Path::new("pqc-data");
@@ -60,6 +62,47 @@ pub trait SecurityProvider: Send + Sync {
 
     /// Decrypt a ciphertext using the internal Kyber Secret Key.
     fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>>;
+
+    /// Decapsulate a Kyber KEM capsule and return the shared secret (32 bytes).
+    ///
+    /// This is a primitive used for post-compromise recovery and anti-replay roots in protocols
+    /// that need a *KEM-derived secret* (not a decrypted plaintext).
+    ///
+    /// Default behavior:
+    /// - If the provider allows exporting identity secrets, this method uses the exported Kyber
+    ///   secret key to decapsulate in software.
+    /// - Hardware providers should override this to use the device's KEM engine (TPM/HSM/TEE).
+    fn kem_decapsulate(&self, kem_ciphertext: &[u8]) -> Result<[u8; 32]> {
+        let exported = self.export_secret_keys().ok_or_else(|| {
+            Error::CryptoError("KEM decapsulation not supported by this provider".into())
+        })?;
+
+        // Determine Kyber level from secret key length.
+        let kyber = match exported.kem_sk.len() {
+            1632 => crate::Kyber::new_with_level(crate::KyberSecurityLevel::Kyber512),
+            2400 => crate::Kyber::new_with_level(crate::KyberSecurityLevel::Kyber768),
+            3168 => crate::Kyber::new_with_level(crate::KyberSecurityLevel::Kyber1024),
+            len => {
+                return Err(Error::CryptoError(format!(
+                    "Invalid Kyber SK length for kem_decapsulate: {}",
+                    len
+                )))
+            }
+        };
+
+        let mut ss = kyber.decapsulate(&exported.kem_sk, kem_ciphertext)?;
+        if ss.len() != 32 {
+            ss.zeroize();
+            return Err(Error::CryptoError(format!(
+                "Unexpected Kyber shared secret length: {}",
+                ss.len()
+            )));
+        }
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&ss);
+        ss.zeroize();
+        Ok(out)
+    }
 
     /// Sign a message using the internal Falcon Secret Key.
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>>;
@@ -286,6 +329,34 @@ impl SecurityProvider for SoftwareSecurityProvider {
         crate::security::hybrid::decrypt_with_exchange(&self.kyber_sk, ciphertext, |peer_pk| {
             self.x25519_exchange(peer_pk)
         })
+    }
+
+    fn kem_decapsulate(&self, kem_ciphertext: &[u8]) -> Result<[u8; 32]> {
+        // Determine Kyber level from Secret Key Length.
+        let kyber = match self.kyber_sk.len() {
+            1632 => crate::Kyber::new_with_level(crate::KyberSecurityLevel::Kyber512),
+            2400 => crate::Kyber::new_with_level(crate::KyberSecurityLevel::Kyber768),
+            3168 => crate::Kyber::new_with_level(crate::KyberSecurityLevel::Kyber1024),
+            len => {
+                return Err(Error::CryptoError(format!(
+                    "Invalid Kyber SK length for kem_decapsulate: {}",
+                    len
+                )))
+            }
+        };
+
+        let mut ss = kyber.decapsulate(&self.kyber_sk, kem_ciphertext)?;
+        if ss.len() != 32 {
+            ss.zeroize();
+            return Err(Error::CryptoError(format!(
+                "Unexpected Kyber shared secret length: {}",
+                ss.len()
+            )));
+        }
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&ss);
+        ss.zeroize();
+        Ok(out)
     }
 
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>> {
