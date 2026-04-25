@@ -25,6 +25,28 @@ mod std_client {
         Aes256Gcm, Nonce,
     };
 
+    #[cfg(feature = "coap-oscore")]
+    use coap_message::{MessageOption as _, MinimalWritableMessage as _, ReadableMessage as _};
+    #[cfg(feature = "coap-oscore")]
+    use coap_message_implementations::inmemory_write::Message as InMemoryWriteMessage;
+    #[cfg(feature = "coap-oscore")]
+    use liboscore::{
+        AeadAlg as OscoreAeadAlg, HkdfAlg as OscoreHkdfAlg, OscoreOption, PrimitiveContext,
+        PrimitiveImmutables,
+    };
+
+    // libOSCORE's native C core expects a freestanding `assert(bool)` symbol (declared in
+    // `oscore_native/platform.h`). On most platforms `assert` is only a macro, so there is no
+    // linkable function symbol. For critical IIoT environments, any invariant violation is a
+    // fail-stop condition.
+    #[cfg(feature = "coap-oscore")]
+    #[no_mangle]
+    extern "C" fn assert(expression: bool) {
+        if !expression {
+            std::process::abort();
+        }
+    }
+
     const COAP_SESSION_INIT_PATH: &str = "pqc/session/init";
     const COAP_SESSION_VERSION_V1: u8 = 1;
     const COAP_MAX_SESSION_CONTROL_BYTES: usize = 64 * 1024;
@@ -280,6 +302,280 @@ mod std_client {
             return Err(Error::SignatureVerification("Verification failed".into()));
         }
         Ok(message.to_vec())
+    }
+
+    // --- OSCORE (RFC 8613) backend (feature-gated) ---
+
+    /// OSCORE (RFC 8613) configuration for a single sender/recipient direction.
+    ///
+    /// This struct intentionally focuses on the *transport security context* only. How the
+    /// `master_secret/master_salt` are provisioned is out of scope here:
+    /// - industrial: EDHOC (RFC 9528) or ACE-OSCORE
+    /// - fleet: provisioned PSKs via enrollment
+    ///
+    /// Security note:
+    /// `PrimitiveContext::new_from_fresh_material` requires that the input key material has not
+    /// been used before. For PSK deployments, ensure `context_id` and `sender_id` are unique per
+    /// logical security context and that sequence numbers are not reset across reboots when the
+    /// peer would still accept old sequence numbers.
+    #[cfg(feature = "coap-oscore")]
+    #[derive(Debug, Clone)]
+    pub struct OscoreConfig {
+        /// Master secret / IKM used to derive the OSCORE context.
+        pub master_secret: Vec<u8>,
+        /// Master salt used to derive the OSCORE context (often empty).
+        pub master_salt: Vec<u8>,
+        /// Optional context identifier (kid context).
+        pub context_id: Option<Vec<u8>>,
+        /// Sender ID (KID) for this endpoint.
+        pub sender_id: Vec<u8>,
+        /// Recipient ID (KID) for the peer.
+        pub recipient_id: Vec<u8>,
+        /// HKDF algorithm number (liboscore uses underlying HMAC ids; 5 == HMAC-256/256).
+        pub hkdf_alg: i32,
+        /// AEAD algorithm number (COSE id; eg. 10 == AES-CCM-16-64-128).
+        pub aead_alg: i32,
+    }
+
+    #[cfg(feature = "coap-oscore")]
+    impl OscoreConfig {
+        /// Construct a PSK-based OSCORE config with conservative defaults:
+        /// - HKDF: HMAC-256/256 (5)
+        /// - AEAD: AES-CCM-16-64-128 (10)
+        pub fn psk(master_secret: Vec<u8>, sender_id: Vec<u8>, recipient_id: Vec<u8>) -> Self {
+            Self {
+                master_secret,
+                master_salt: Vec::new(),
+                context_id: None,
+                sender_id,
+                recipient_id,
+                hkdf_alg: 5,
+                aead_alg: 10,
+            }
+        }
+    }
+
+    #[cfg(feature = "coap-oscore")]
+    fn oscore_context_from_config(cfg: &OscoreConfig) -> Result<PrimitiveContext> {
+        let hkdf_alg = OscoreHkdfAlg::from_number(cfg.hkdf_alg)
+            .map_err(|_| Error::InvalidInput("Unsupported OSCORE HKDF algorithm".into()))?;
+        let aead_alg = OscoreAeadAlg::from_number(cfg.aead_alg)
+            .map_err(|_| Error::InvalidInput("Unsupported OSCORE AEAD algorithm".into()))?;
+
+        let imm = PrimitiveImmutables::derive(
+            hkdf_alg,
+            &cfg.master_secret,
+            &cfg.master_salt,
+            cfg.context_id.as_deref(),
+            aead_alg,
+            &cfg.sender_id,
+            &cfg.recipient_id,
+        )
+        .map_err(|_| Error::InvalidInput("Invalid OSCORE context parameters".into()))?;
+
+        Ok(PrimitiveContext::new_from_fresh_material(imm))
+    }
+
+    /// OSCORE-protected CoAP client (RFC 8613).
+    ///
+    /// This is the "industrial" security backend for CoAP:
+    /// - confidentiality + integrity on CoAP options/payload
+    /// - replay protection via OSCORE sequence numbers + replay window
+    ///
+    /// Key exchange / provisioning is intentionally out-of-scope; supply the derived context via
+    /// `OscoreConfig` (PSK or EDHOC-derived).
+    #[cfg(feature = "coap-oscore")]
+    pub struct SecureCoapOscoreClient {
+        ctx: PrimitiveContext,
+        timeout: Duration,
+        socket: Option<UdpSocket>,
+    }
+
+    #[cfg(feature = "coap-oscore")]
+    impl SecureCoapOscoreClient {
+        /// Create a new OSCORE client.
+        pub fn new(cfg: OscoreConfig) -> Result<Self> {
+            Ok(Self {
+                ctx: oscore_context_from_config(&cfg)?,
+                timeout: Duration::from_secs(2),
+                socket: None,
+            })
+        }
+
+        /// Set socket timeout.
+        pub fn with_timeout(mut self, timeout: Duration) -> Self {
+            self.timeout = timeout;
+            self
+        }
+
+        fn ensure_socket(&mut self) -> Result<UdpSocket> {
+            if self.socket.is_none() {
+                let socket =
+                    UdpSocket::bind("0.0.0.0:0").map_err(|e| Error::ClientError(e.to_string()))?;
+                socket
+                    .set_read_timeout(Some(self.timeout))
+                    .map_err(|e| Error::ClientError(e.to_string()))?;
+                self.socket = Some(socket);
+            }
+            self.socket
+                .as_ref()
+                .ok_or_else(|| Error::ClientError("Socket missing".into()))?
+                .try_clone()
+                .map_err(|e| Error::ClientError(e.to_string()))
+        }
+
+        fn protect_packet(
+            &mut self,
+            packet: &Packet,
+        ) -> Result<(Packet, liboscore::raw::oscore_requestid_t)> {
+            // Use an inmemory_write::Message as an ephemeral backend for liboscore. We avoid
+            // leaking any OSCORE internal message representation into the public API.
+            let mut out_code: u8 = u8::from(packet.header.code);
+            let mut tail = vec![0u8; COAP_MAX_SECURE_PAYLOAD_BYTES];
+            let mut msg = InMemoryWriteMessage::new(&mut out_code, &mut tail);
+
+            let (request_id, write_res) =
+                liboscore::protect_request(&mut msg, &mut self.ctx, |pm| {
+                    pm.set_code(u8::from(packet.header.code));
+
+                    for (number, values) in packet.options() {
+                        for v in values.iter() {
+                            pm.add_option(*number, v).map_err(|_| {
+                                Error::CryptoError("OSCORE add_option failed".into())
+                            })?;
+                        }
+                    }
+                    pm.set_payload(&packet.payload)
+                        .map_err(|_| Error::CryptoError("OSCORE set_payload failed".into()))?;
+                    Ok::<(), Error>(())
+                })
+                .map_err(|_| Error::CryptoError("OSCORE protect_request failed".into()))?;
+            write_res?;
+
+            let mut out = Packet::new();
+            out.header = coap_lite::Header::from_raw(&packet.header.to_raw());
+            out.set_token(packet.get_token().to_vec());
+            out.payload = msg.payload().to_vec();
+            out.header.code = coap_lite::MessageClass::from(msg.code());
+
+            for opt in msg.options() {
+                out.add_option(CoapOption::from(opt.number()), opt.value().to_vec());
+            }
+
+            Ok((out, request_id))
+        }
+
+        fn unprotect_response(
+            &mut self,
+            protected: &Packet,
+            correlation: &mut liboscore::raw::oscore_requestid_t,
+        ) -> Result<Packet> {
+            let oscore_opt = protected
+                .get_first_option(CoapOption::Oscore)
+                .ok_or_else(|| Error::ProtocolError("Missing OSCORE option".into()))?;
+            let parsed = OscoreOption::parse(oscore_opt)
+                .map_err(|_| Error::ProtocolError("Unsupported OSCORE option fields".into()))?;
+
+            // Encode the protected message into an inmemory_write::Message backend.
+            let mut code: u8 = u8::from(protected.header.code);
+            let mut tail = vec![0u8; COAP_MAX_SECURE_PAYLOAD_BYTES];
+            let mut msg = InMemoryWriteMessage::new(&mut code, &mut tail);
+            for (number, values) in protected.options() {
+                for v in values.iter() {
+                    msg.add_option(*number, v)
+                        .map_err(|_| Error::CryptoError("OSCORE add_option failed".into()))?;
+                }
+            }
+            msg.set_payload(&protected.payload)
+                .map_err(|_| Error::CryptoError("OSCORE set_payload failed".into()))?;
+
+            let (plain_code, plain_opts, plain_payload) =
+                liboscore::unprotect_response(&mut msg, &mut self.ctx, parsed, correlation, |pm| {
+                    let code = pm.code();
+                    let mut opts = Vec::new();
+                    for o in pm.options() {
+                        opts.push((o.number(), o.value().to_vec()));
+                    }
+                    (code, opts, pm.payload().to_vec())
+                })
+                .map_err(|_| Error::CryptoError("OSCORE unprotect_response failed".into()))?;
+
+            let mut out = Packet::new();
+            out.header = coap_lite::Header::from_raw(&protected.header.to_raw());
+            out.set_token(protected.get_token().to_vec());
+            out.header.code = coap_lite::MessageClass::from(plain_code);
+            out.payload = plain_payload;
+            for (n, v) in plain_opts {
+                out.add_option(CoapOption::from(n), v);
+            }
+            Ok(out)
+        }
+
+        fn send_oscore_request(
+            &mut self,
+            method: RequestType,
+            server: SocketAddr,
+            path: &str,
+            payload: &[u8],
+        ) -> Result<CoapResponse> {
+            // Build a plaintext CoAP request (coap-lite handles options like Uri-Path).
+            let mut request: CoapRequest<()> = CoapRequest::new();
+            request.set_method(method);
+            request.set_path(path);
+            request.message.payload = payload.to_vec();
+
+            // OSCORE protection (creates ciphertext + OSCORE option, and updates sequence state).
+            let (protected, mut correlation) = self.protect_packet(&request.message)?;
+            let packet_bytes = protected
+                .to_bytes()
+                .map_err(|_| Error::ClientError("Packet serialization failed".into()))?;
+
+            let socket = self.ensure_socket()?;
+            socket
+                .send_to(&packet_bytes, server)
+                .map_err(|e| Error::ClientError(e.to_string()))?;
+
+            let mut buf = vec![0u8; 2048];
+            let (amt, _src) = socket
+                .recv_from(&mut buf)
+                .map_err(|e| Error::ClientError(e.to_string()))?;
+
+            let packet = Packet::from_bytes(&buf[..amt])
+                .map_err(|_| Error::ClientError("Invalid packet".into()))?;
+
+            let plain = self.unprotect_response(&packet, &mut correlation)?;
+            Ok(CoapResponse { message: plain })
+        }
+
+        /// Sends a GET request.
+        pub fn get(&mut self, server: SocketAddr, resource: &str) -> Result<CoapResponse> {
+            self.send_oscore_request(RequestType::Get, server, resource, &[])
+        }
+
+        /// Sends a POST request.
+        pub fn post(
+            &mut self,
+            server: SocketAddr,
+            resource: &str,
+            payload: &[u8],
+        ) -> Result<CoapResponse> {
+            self.send_oscore_request(RequestType::Post, server, resource, payload)
+        }
+
+        /// Sends a PUT request.
+        pub fn put(
+            &mut self,
+            server: SocketAddr,
+            resource: &str,
+            payload: &[u8],
+        ) -> Result<CoapResponse> {
+            self.send_oscore_request(RequestType::Put, server, resource, payload)
+        }
+
+        /// Sends a DELETE request.
+        pub fn delete(&mut self, server: SocketAddr, resource: &str) -> Result<CoapResponse> {
+            self.send_oscore_request(RequestType::Delete, server, resource, &[])
+        }
     }
 
     const COAP_SESSION_MAX_SKIPPED_KEYS: usize = 50;
@@ -1702,6 +1998,89 @@ mod std_client {
                 .unwrap();
             assert_eq!(response.message.payload, b"hello-secure");
         }
+
+        #[cfg(feature = "coap-oscore")]
+        #[test]
+        fn coap_oscore_roundtrip_echo() {
+            let server_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+            server_socket
+                .set_read_timeout(Some(Duration::from_millis(500)))
+                .unwrap();
+            let server_addr = server_socket.local_addr().unwrap();
+
+            let master_secret = vec![0x42u8; 32];
+            let mut client_cfg =
+                OscoreConfig::psk(master_secret.clone(), b"c".to_vec(), b"s".to_vec());
+            client_cfg.context_id = Some(b"ctx1".to_vec());
+            let mut server_cfg = OscoreConfig::psk(master_secret, b"s".to_vec(), b"c".to_vec());
+            server_cfg.context_id = Some(b"ctx1".to_vec());
+
+            thread::spawn(move || {
+                let mut server_ctx = oscore_context_from_config(&server_cfg).unwrap();
+                let mut buf = [0u8; 2048];
+                if let Ok((amt, src)) = server_socket.recv_from(&mut buf) {
+                    let packet = Packet::from_bytes(&buf[..amt]).unwrap();
+
+                    let oscore_opt = packet.get_first_option(CoapOption::Oscore).unwrap();
+                    let parsed = OscoreOption::parse(oscore_opt).unwrap();
+
+                    let mut code: u8 = u8::from(packet.header.code);
+                    let mut tail = vec![0u8; COAP_MAX_SECURE_PAYLOAD_BYTES];
+                    let mut msg = InMemoryWriteMessage::new(&mut code, &mut tail);
+                    for (number, values) in packet.options() {
+                        for v in values.iter() {
+                            msg.add_option(*number, v).unwrap();
+                        }
+                    }
+                    msg.set_payload(&packet.payload).unwrap();
+
+                    let (mut request_id, plaintext) =
+                        liboscore::unprotect_request(&mut msg, parsed, &mut server_ctx, |pm| {
+                            pm.payload().to_vec()
+                        })
+                        .unwrap();
+
+                    // Echo response.
+                    let mut resp_code: u8 = 0;
+                    let mut resp_tail = vec![0u8; COAP_MAX_SECURE_PAYLOAD_BYTES];
+                    let mut resp_msg = InMemoryWriteMessage::new(&mut resp_code, &mut resp_tail);
+
+                    let write_res = liboscore::protect_response(
+                        &mut resp_msg,
+                        &mut server_ctx,
+                        &mut request_id,
+                        |pm| {
+                            pm.set_code(0x45); // 2.05 Content
+                            pm.set_payload(&plaintext)
+                                .map_err(|_| Error::CryptoError("OSCORE set_payload failed".into()))
+                        },
+                    )
+                    .unwrap();
+                    write_res.unwrap();
+
+                    let mut response = Packet::new();
+                    response.header = coap_lite::Header::from_raw(&packet.header.to_raw());
+                    response
+                        .header
+                        .set_type(coap_lite::MessageType::Acknowledgement);
+                    response.set_token(packet.get_token().to_vec());
+                    response.header.code = coap_lite::MessageClass::from(resp_msg.code());
+                    response.payload = resp_msg.payload().to_vec();
+                    for o in resp_msg.options() {
+                        response.add_option(CoapOption::from(o.number()), o.value().to_vec());
+                    }
+
+                    let bytes = response.to_bytes().unwrap();
+                    let _ = server_socket.send_to(&bytes, src);
+                }
+            });
+
+            let mut client = SecureCoapOscoreClient::new(client_cfg).unwrap();
+            let response = client
+                .post(server_addr, "oscore/echo", b"hello-oscore")
+                .unwrap();
+            assert_eq!(response.message.payload, b"hello-oscore");
+        }
     }
 }
 
@@ -1709,6 +2088,9 @@ mod std_client {
 pub use std_client::{
     AclRules, DtlsConfig, SecureCoapClient, SecureCoapSessionClient, SecureCoapSessionServer,
 };
+
+#[cfg(all(feature = "coap-std", feature = "coap-oscore"))]
+pub use std_client::{OscoreConfig, SecureCoapOscoreClient};
 
 #[cfg(not(feature = "coap-std"))]
 mod nostd_core {

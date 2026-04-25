@@ -17,6 +17,8 @@ pub mod policy;
 pub mod provider;
 /// Signed revocation updates (CA-distributed).
 pub mod revocation;
+/// Root-of-trust boundary (TPM/TEE/HSM) and composite providers.
+pub mod root_of_trust;
 /// Secure time / monotonic floor helpers (best-effort without TPM/HSM).
 #[cfg(feature = "std")]
 pub mod time;

@@ -209,7 +209,72 @@ fn mqtt_session_ratchet_establishes_and_binds_topic_and_rejects_replay(
     let topic_reply = format!("secure/session_reply_{}", suffix);
     alice.subscribe(&topic_reply)?;
 
+    // Sniff the responder's first session packet and ensure it carries a KEM ciphertext.
+    // This is the in-session PQC PCS refresh signal for the hybrid DH+KEM ratchet.
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let (reply_ready_tx, reply_ready_rx) = std::sync::mpsc::channel::<()>();
+    let topic_reply_sniff = topic_reply.clone();
+    let bob_id_sniff = bob_id.clone();
+    let reply_handle = std::thread::spawn(move || {
+        let mut opts = MqttOptions::new("sniffer_reply", "localhost", port);
+        opts.set_clean_session(true);
+        let (mut sniff_client, mut sniff_conn) = RumqttClient::new(opts, 10);
+        sniff_client
+            .subscribe(&topic_reply_sniff, QoS::AtLeastOnce)
+            .expect("sniffer reply subscribe");
+
+        let mut ready_sent = false;
+        for notification in sniff_conn.iter() {
+            if let Ok(Event::Incoming(Packet::SubAck(_))) = notification {
+                if !ready_sent {
+                    let _ = reply_ready_tx.send(());
+                    ready_sent = true;
+                }
+                continue;
+            }
+            if let Ok(Event::Incoming(Packet::Publish(p))) = notification {
+                if p.payload.len() < 4 {
+                    continue;
+                }
+                let id_len = u16::from_be_bytes([p.payload[0], p.payload[1]]) as usize;
+                if p.payload.len() < 2 + id_len + 1 {
+                    continue;
+                }
+                let id_bytes = &p.payload[2..2 + id_len];
+                if let Ok(id) = std::str::from_utf8(id_bytes) {
+                    if id != bob_id_sniff {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+                let _ = reply_tx.send(p.payload.to_vec());
+                break;
+            }
+        }
+        let _ = sniff_client.disconnect();
+    });
+
+    reply_ready_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("reply sniffer not ready");
+
     bob.publish_encrypted(&topic_reply, b"SESSION_REPLY", &alice_id)?;
+
+    let raw_reply = reply_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("did not sniff responder session packet");
+    reply_handle.join().expect("reply sniffer thread panicked");
+
+    // Wire format: [sender_id_len:u16][sender_id][v=4][session_id:16][dh_pub:32][msg_num:u32][pn:u32][kem_ct_len:u16]...
+    let id_len = u16::from_be_bytes([raw_reply[0], raw_reply[1]]) as usize;
+    let offset = 2 + id_len;
+    assert_eq!(raw_reply[offset], 4, "Expected session packet version v4");
+    let kem_ct_len = u16::from_be_bytes([raw_reply[offset + 57], raw_reply[offset + 58]]) as usize;
+    assert!(
+        kem_ct_len > 0,
+        "Expected responder to carry KEM ciphertext on first ratchet send"
+    );
 
     let start = Instant::now();
     let mut got_reply = 0u32;
@@ -226,6 +291,162 @@ fn mqtt_session_ratchet_establishes_and_binds_topic_and_rejects_replay(
     }
 
     assert_eq!(got_reply, 1, "Expected exactly one session reply delivery");
+
+    Ok(())
+}
+
+#[test]
+fn mqtt_session_v4_rejects_dh_ratchet_without_kem_after_established(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let port = 29841;
+    common::start_mqtt_broker(port);
+    let suffix: u32 = rand::random();
+
+    let key_prefix = format!("pqc/session_downgrade_keys_{}/", suffix);
+    let topic = format!("secure/session_downgrade_{}", suffix);
+
+    let alice_id = format!("alice_downgrade_{}", suffix);
+    let bob_id = format!("bob_downgrade_{}", suffix);
+
+    let mut alice = SecureMqttClient::new("localhost", port, &alice_id)?
+        .with_strict_mode(false)
+        .with_key_prefix(&key_prefix);
+    let mut bob = SecureMqttClient::new("localhost", port, &bob_id)?
+        .with_strict_mode(false)
+        .with_key_prefix(&key_prefix);
+
+    alice.bootstrap()?;
+    bob.bootstrap()?;
+
+    bob.subscribe(&topic)?;
+
+    wait_for_key_exchange(&mut alice, &mut bob, &alice_id, &bob_id)?;
+
+    // Establish session (Alice -> Bob).
+    alice.initiate_session(&bob_id)?;
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(5) {
+        alice.poll(|_, _| {})?;
+        bob.poll(|_, _| {})?;
+        if alice.has_session(&bob_id) && bob.has_session(&alice_id) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(alice.has_session(&bob_id));
+    assert!(bob.has_session(&alice_id));
+
+    // Sniff a valid v4 packet to extract the session_id.
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+    let topic_sniff = topic.clone();
+    let alice_id_sniff = alice_id.clone();
+    let sniff_handle = std::thread::spawn(move || {
+        let mut opts = MqttOptions::new("sniffer_downgrade", "localhost", port);
+        opts.set_clean_session(true);
+        let (mut sniff_client, mut sniff_conn) = RumqttClient::new(opts, 10);
+        sniff_client
+            .subscribe(&topic_sniff, QoS::AtLeastOnce)
+            .expect("sniffer subscribe");
+
+        let mut ready_sent = false;
+        for notification in sniff_conn.iter() {
+            if let Ok(Event::Incoming(Packet::SubAck(_))) = notification {
+                if !ready_sent {
+                    let _ = ready_tx.send(());
+                    ready_sent = true;
+                }
+                continue;
+            }
+            if let Ok(Event::Incoming(Packet::Publish(p))) = notification {
+                if p.payload.len() < 4 {
+                    continue;
+                }
+                let id_len = u16::from_be_bytes([p.payload[0], p.payload[1]]) as usize;
+                if p.payload.len() < 2 + id_len + 1 {
+                    continue;
+                }
+                let id_bytes = &p.payload[2..2 + id_len];
+                if let Ok(id) = std::str::from_utf8(id_bytes) {
+                    if id != alice_id_sniff {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+                let _ = tx.send(p.payload.to_vec());
+                break;
+            }
+        }
+        let _ = sniff_client.disconnect();
+    });
+
+    ready_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("sniffer not ready");
+
+    alice.publish_encrypted(&topic, b"HELLO", &bob_id)?;
+    let raw = rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("did not sniff initial session packet");
+    sniff_handle.join().expect("sniffer thread panicked");
+
+    // Extract session_id from the sniffed packet.
+    let id_len = u16::from_be_bytes([raw[0], raw[1]]) as usize;
+    let offset = 2 + id_len;
+    assert_eq!(raw[offset], 4, "Expected session packet version v4");
+    let mut session_id = [0u8; 16];
+    session_id.copy_from_slice(&raw[offset + 1..offset + 17]);
+
+    // Ensure Bob accepted the initial plaintext (so recv_chain_key is established).
+    let start = Instant::now();
+    let mut got_hello = 0u32;
+    while start.elapsed() < Duration::from_secs(3) {
+        bob.poll(|t, p| {
+            if t == topic && p == b"HELLO" {
+                got_hello += 1;
+            }
+        })?;
+        if got_hello >= 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(got_hello, 1);
+
+    // Craft a malicious ratchet packet: new dh_pub but kem_ct_len=0.
+    // After the receiving chain is established, this must be rejected as a downgrade.
+    let sender_id_bytes = alice_id.as_bytes();
+    let sender_id_len = sender_id_bytes.len() as u16;
+    let mut malicious = Vec::new();
+    malicious.extend_from_slice(&sender_id_len.to_be_bytes());
+    malicious.extend_from_slice(sender_id_bytes);
+    malicious.push(4); // v4
+    malicious.extend_from_slice(&session_id);
+    malicious.extend_from_slice(&[0xAAu8; 32]); // new dh_pub
+    malicious.extend_from_slice(&0u32.to_be_bytes()); // msg_num
+    malicious.extend_from_slice(&0u32.to_be_bytes()); // pn
+    malicious.extend_from_slice(&0u16.to_be_bytes()); // kem_ct_len=0 (downgrade)
+    malicious.extend_from_slice(&16u32.to_be_bytes()); // ct_len
+    malicious.extend_from_slice(&[0u8; 16]); // bogus tag-only ciphertext
+
+    publish_raw(&topic, port, malicious)?;
+
+    // Bob must not deliver any new plaintext.
+    let start = Instant::now();
+    let mut got_any = false;
+    while start.elapsed() < Duration::from_millis(500) {
+        bob.poll(|t, _p| {
+            if t == topic {
+                got_any = true;
+            }
+        })?;
+        if got_any {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!got_any, "Downgrade packet must not be delivered");
 
     Ok(())
 }

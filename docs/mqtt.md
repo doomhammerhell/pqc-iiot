@@ -132,12 +132,12 @@ Fleet security policy is a CA-signed update stream (not broker-trusted configura
 
 Policy is treated as an explicit **security gate**:
 
-- `require_sessions`: disallows v1 per-message hybrid encryption and requires v3 forward-secure sessions (double ratchet).
+- `require_sessions`: disallows v1 per-message hybrid encryption and requires v4 forward-secure sessions (hybrid DH+KEM double ratchet).
 - `min_revocation_seq`: fail-closed until emergency revocations are caught up.
 - `ttl_secs`: when secure time is available, new handshakes and encrypted sends fail-closed once the policy becomes stale.
 - `require_rollback_resistant_storage`: fail-closed unless the provider backend is rollback resistant.
 
-## Forward-Secure Sessions (v3: Double Ratchet)
+## Forward-Secure Sessions (v4: Hybrid DH+KEM Double Ratchet)
 
 Per-message hybrid encryption (`publish_encrypted`) is simple but does **not** provide post-compromise security (PCS): if a peer identity key is compromised, historical traffic is still safe (PQC), but the attacker can forge traffic until revocation/rotation and the receiver has to verify signatures on every packet.
 
@@ -145,11 +145,12 @@ For critical IIoT deployments, the crate supports forward-secure authenticated s
 
 - Session establishment is authenticated by long-term Falcon identities (no broker trust).
 - Initial shared secret is hybrid: Kyber (PQC) + X25519 (classical) handshake DH.
-- Session traffic uses a DH-driven **double ratchet**:
+- Session traffic uses a **double ratchet** with hybrid root updates:
   - per-message symmetric ratchet (KDF chain) for forward secrecy
-  - periodic DH ratchet steps for PCS recovery after compromise ends (when bidirectional traffic exists)
+  - DH ratchet steps for PCS recovery after compromise ends
+  - optional Kyber KEM secrets injected into root updates on DH transitions and policy-driven sender refresh
 
-**Important:** the DH ratchet step is X25519 (classical). That gives PCS against a classical attacker who is no longer on the endpoint, but it is not “post-quantum PCS”. For PQC refresh, fleets should enforce periodic session re-handshakes (Kyber + X25519) via policy (`session_rekey_after_msgs` / `session_rekey_after_secs`) until a KEM-based in-session ratchet exists.
+**Important:** classical DH is still X25519, but v4 can inject a Kyber KEM shared secret into the root KDF on ratchet transitions and on policy-driven sender refresh. This gives a practical PQC refresh signal inside established sessions without requiring a full re-handshake for every rotation.
 
 ### Handshake (topics + messages)
 
@@ -173,7 +174,7 @@ Both messages are JSON and include a detached Falcon signature over a canonical 
 Session traffic is a binary packet carried as MQTT payload:
 
 ```
-[sender_id_len:u16][sender_id][v=3][session_id:16][dh_pub:32][msg_num:u32][pn:u32][ct_len:u32][ct]
+[sender_id_len:u16][sender_id][v=4][session_id:16][dh_pub:32][msg_num:u32][pn:u32][kem_ct_len:u16][kem_ct][ct_len:u32][ct]
 ```
 
 Where:
@@ -181,13 +182,15 @@ Where:
 - `dh_pub` is the sender’s current ratchet DH public key.
 - `msg_num` is the message number in the current sending chain.
 - `pn` is the previous chain length (Double Ratchet “PN”), used for skipped-key recovery across DH transitions.
-- `ct` is AES-256-GCM ciphertext+tag, with AAD binding `(sender_id, receiver_id, topic, session_id, dh_pub, msg_num, pn)`.
+- `kem_ct` is an (optional) Kyber ciphertext carried on DH transitions (and for a small carry window) to enable the hybrid DH+KEM root update.
+- `ct` is AES-256-GCM ciphertext+tag, with AAD binding `(sender_id, receiver_id, topic, session_id, dh_pub, msg_num, pn, kem_ct)`.
 
 ### Operational notes (availability vs security)
 
 - The responder derives its send chain only after processing the first inbound DH ratchet step; the initiator should send first.
+- On DH transitions, the sender carries the Kyber ciphertext for a small number of subsequent messages to tolerate bounded reordering. Packets that attempt a DH transition without the expected KEM material after the session is established are rejected as downgrade attempts.
 - Long partitions are handled via retained policy/revocation updates and best-effort sync requests (`pqc/policy/sync/v1`, `pqc/revocations/sync/v1`).
-- Session rekey thresholds are driven by fleet policy (`session_rekey_after_msgs`, `session_rekey_after_secs`) and trigger a fresh handshake.
+- Session rekey thresholds are driven by fleet policy (`session_rekey_after_msgs`, `session_rekey_after_secs`) and trigger an in-session sender refresh (new DH sending key + Kyber KEM injection + carried ciphertext) rather than a full control-plane handshake.
 
 ### Anti-Rollback Floors (Sealed Monotonic Counters)
 

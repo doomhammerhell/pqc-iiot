@@ -417,6 +417,40 @@ impl SecurityProvider for SoftwareTpm {
             .map_err(|e| Error::CryptoError(format!("TPM Decrypt Fail: {:?}", e)))
     }
 
+    fn kem_decapsulate(&self, kem_ciphertext: &[u8]) -> Result<[u8; 32]> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| Error::CryptoError("TPM Lock Poisoned".into()))?;
+
+        let kyber = match state.kem_sk.len() {
+            1632 => Kyber::new_with_level(crate::KyberSecurityLevel::Kyber512),
+            2400 => Kyber::new_with_level(crate::KyberSecurityLevel::Kyber768),
+            3168 => Kyber::new_with_level(crate::KyberSecurityLevel::Kyber1024),
+            len => {
+                return Err(Error::CryptoError(format!(
+                    "Invalid Kyber SK length for kem_decapsulate: {}",
+                    len
+                )))
+            }
+        };
+
+        let mut ss = kyber
+            .decapsulate(&state.kem_sk, kem_ciphertext)
+            .map_err(|e| Error::CryptoError(format!("TPM KEM decap fail: {:?}", e)))?;
+        if ss.len() != 32 {
+            ss.zeroize();
+            return Err(Error::CryptoError(format!(
+                "Unexpected Kyber shared secret length: {}",
+                ss.len()
+            )));
+        }
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&ss);
+        ss.zeroize();
+        Ok(out)
+    }
+
     fn export_secret_keys(&self) -> Option<crate::security::provider::ExportedIdentitySecrets> {
         // TPM keys are non-exportable by design.
         None
