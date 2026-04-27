@@ -62,6 +62,8 @@ default = [
 embedded = ["no-std", "heapless", "serde"]
 heapless = []
 mqtt = ["std", "rumqttc", "tokio", "dep:rand", "dep:serde_json", "serde_json/std"]
+# Gateway HSM integration (PKCS#11). This is feature-gated and vendor-specific.
+hsm-pkcs11 = ["std", "dep:cryptoki"]
 # ...
 no-std = []
 std = ["rand_core/getrandom", "log/std"]
@@ -116,6 +118,7 @@ hmac = { version = "0.12", default-features = false }
 log = { version = "0.4.29", default-features = false }
 hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
 x25519-dalek = { version = "2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
+cryptoki = { version = "0.12.0", optional = true }
 
 [dev-dependencies]
 criterion = "0.5"
