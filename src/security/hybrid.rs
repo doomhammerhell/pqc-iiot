@@ -170,6 +170,144 @@ where
     }
 }
 
+/// Decrypt a hybrid packet using a KEM decapsulation oracle (HSM/TPM/TEE) plus X25519 exchange.
+///
+/// This is the gateway/hardware-provider entry point: the KEM secret key is never materialized as
+/// bytes in process memory. Only the derived shared secret is returned.
+pub fn decrypt_with_kem_and_exchange<F, G>(
+    packet: &[u8],
+    kem_decapsulate: F,
+    x25519_exchange: G,
+) -> Result<Vec<u8>>
+where
+    F: FnOnce(&[u8]) -> Result<[u8; 32]>,
+    G: FnOnce([u8; 32]) -> Result<[u8; 32]>,
+{
+    if packet.is_empty() {
+        return Err(Error::CryptoError("Packet too short".into()));
+    }
+    if packet[0] == 1 {
+        decrypt_v1_with_kem(packet, kem_decapsulate, x25519_exchange)
+    } else {
+        decrypt_legacy_with_kem(packet, kem_decapsulate)
+    }
+}
+
+fn decrypt_v1_with_kem<F, G>(
+    packet: &[u8],
+    kem_decapsulate: F,
+    x25519_exchange: G,
+) -> Result<Vec<u8>>
+where
+    F: FnOnce(&[u8]) -> Result<[u8; 32]>,
+    G: FnOnce([u8; 32]) -> Result<[u8; 32]>,
+{
+    if packet.len() < 1 + 1 + 2 + X25519_PK_SIZE + NONCE_SIZE {
+        return Err(Error::CryptoError("Packet too short".into()));
+    }
+
+    let version = packet[0];
+    let suite = packet[1];
+    if version != 1 {
+        return Err(Error::CryptoError(format!(
+            "Unsupported packet version: {}",
+            version
+        )));
+    }
+    if suite != 1 {
+        return Err(Error::CryptoError(format!(
+            "Unsupported hybrid suite: {}",
+            suite
+        )));
+    }
+
+    let capsule_len = u16::from_be_bytes([packet[2], packet[3]]) as usize;
+    let header_len = 1 + 1 + 2 + capsule_len + X25519_PK_SIZE;
+    if packet.len() < header_len + NONCE_SIZE + 16 {
+        return Err(Error::CryptoError("Packet too short for capsule".into()));
+    }
+
+    let capsule_start = 4;
+    let capsule_end = capsule_start + capsule_len;
+    let eph_pk_start = capsule_end;
+    let eph_pk_end = eph_pk_start + X25519_PK_SIZE;
+    let nonce_start = eph_pk_end;
+    let nonce_end = nonce_start + NONCE_SIZE;
+
+    let capsule = &packet[capsule_start..capsule_end];
+    let eph_pk_bytes = &packet[eph_pk_start..eph_pk_end];
+    let nonce_bytes = &packet[nonce_start..nonce_end];
+    let ciphertext = &packet[nonce_end..];
+
+    let mut kyber_ss = kem_decapsulate(capsule)?;
+    let mut eph_pk = [0u8; 32];
+    eph_pk.copy_from_slice(eph_pk_bytes);
+    let mut x_ss = x25519_exchange(eph_pk)?;
+
+    let mut ikm = [0u8; 64];
+    ikm[..32].copy_from_slice(&kyber_ss);
+    ikm[32..].copy_from_slice(&x_ss);
+    kyber_ss.zeroize();
+    x_ss.zeroize();
+
+    let hk = Hkdf::<Sha256>::new(None, &ikm);
+    let mut key_bytes = [0u8; 32];
+    let expand_res = hk
+        .expand(b"pqc-iiot:hybrid:v1:aes-gcm-key", &mut key_bytes)
+        .map_err(|_| Error::CryptoError("HKDF expand failed".into()));
+    if let Err(e) = expand_res {
+        key_bytes.zeroize();
+        ikm.zeroize();
+        return Err(e);
+    }
+
+    let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&key_bytes);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(nonce_bytes);
+
+    let aad = &packet[..header_len];
+    let out_res = cipher
+        .decrypt(
+            nonce,
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
+        .map_err(|_| Error::CryptoError("AES-GCM decryption failed".into()));
+    key_bytes.zeroize();
+    ikm.zeroize();
+    out_res
+}
+
+fn decrypt_legacy_with_kem<F>(packet: &[u8], kem_decapsulate: F) -> Result<Vec<u8>>
+where
+    F: FnOnce(&[u8]) -> Result<[u8; 32]>,
+{
+    if packet.len() < 2 {
+        return Err(Error::CryptoError("Packet too short".into()));
+    }
+    let (len_bytes, rest) = packet.split_at(2);
+    let capsule_len = u16::from_be_bytes([len_bytes[0], len_bytes[1]]) as usize;
+
+    if rest.len() < capsule_len + NONCE_SIZE {
+        return Err(Error::CryptoError("Packet too short for capsule".into()));
+    }
+    let (capsule, rest) = rest.split_at(capsule_len);
+    let (nonce_bytes, ciphertext) = rest.split_at(NONCE_SIZE);
+
+    let mut shared_secret = kem_decapsulate(capsule)?;
+    let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&shared_secret);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(nonce_bytes);
+
+    let out_res = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| Error::CryptoError("AES-GCM decryption failed".into()));
+    shared_secret.zeroize();
+    out_res
+}
+
 fn decrypt_v1<F>(my_kem_sk: &[u8], packet: &[u8], x25519_exchange: F) -> Result<Vec<u8>>
 where
     F: FnOnce([u8; 32]) -> Result<[u8; 32]>,

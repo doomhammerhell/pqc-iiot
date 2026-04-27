@@ -69,6 +69,24 @@ Implementation note:
 - Software providers implement monotonic counters via sealed blobs (best-effort, rollbackable).
 - Hardware providers must override monotonic counter operations to use rollback-resistant primitives.
 
+### 1.3 HSM secrecy boundaries are explicit (no accidental secret export)
+
+**Invariant:** When a provider claims a token-resident identity key, the protocol path MUST NOT
+silently fall back to exporting derived shared secrets into host memory.
+
+Concrete case (gateway PKCS#11 HSM):
+
+- If the backend exposes a token-resident X25519 identity (`PqcHsmBackend::x25519_public_key() -> Some(_)`)
+  then hybrid v1 decryption MUST use the **full in-token** path:
+  - Kyber shared secret is derived as a non-extractable key object (vendor KEM `C_DeriveKey`)
+  - X25519 shared secret is derived as a non-extractable key object (`CKM_ECDH1_DERIVE`)
+  - concat + HKDF + AES-GCM decrypt occur inside the token
+- If the backend cannot provide full in-token decrypt, provider construction MUST fail (fail closed).
+
+Regression coverage:
+
+- `/Users/mac/Projects/pqc-iiot/src/security/hsm.rs::gateway_hsm_provider_uses_full_in_token_decrypt_when_x25519_is_token_resident`
+
 ---
 
 ## 2. Fleet Policy / Revocation Invariants (Partitions)
